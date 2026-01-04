@@ -1,0 +1,44 @@
+# Example Configuration
+# Copy this file and modify as needed for your environment
+
+agent:
+  name: "forge-agent"
+  
+  workspace:
+    base_path: "~/repos"
+    persistent: true
+
+  llm:
+    provider: "localai"
+    base_url: "http://localhost:8080"
+    model: "gpt-3.5-turbo"
+    temperature: 0.7
+
+  runtime:
+    max_iterations: 50
+    timeout_seconds: 3600
+
+  tools:
+    filesystem:
+      enabled: true
+      allowed_paths:
+        - "~/repos"
+    
+    git:
+      enabled: true
+      default_branch_prefix: "agent/"
+    
+    github:
+      enabled: true
+      # Set GITHUB_TOKEN environment variable
+    
+    shell:
+      enabled: true
+      allowed_commands:
+        - "git"
+        - "npm"
+        - "python"
+    
+    system:
+      enabled: true
+
