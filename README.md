@@ -14,6 +14,35 @@ Forge Agent is a production-quality, long-term infrastructure project for autono
 - **Config-driven**: Behavior controlled via YAML configuration files
 - **API-first**: RESTful API for integration with web/mobile frontends
 
+## Core Mental Model
+
+**Forge Agent is NOT an AI that directly executes code or system actions.**
+
+It is a **deterministic agent runtime** that:
+- Uses an LLM strictly as a **reasoning engine**
+- Owns all execution logic itself
+- Exposes explicit, auditable tools for system interaction
+
+In short:
+
+```
+LLM = reasoning
+Agent = control
+Tools = execution
+```
+
+The LLM is treated as an **untrusted but useful reasoning component**. It:
+- Never executes code
+- Never accesses the filesystem directly
+- Never performs network or system actions
+- Only returns structured text outputs (plans, suggestions)
+
+The Agent Runtime (Planner + Executor) is the **deterministic control layer** that:
+- Consults the LLM for reasoning and planning
+- Owns all execution decisions
+- Validates and enforces safety constraints
+- Is the ONLY component allowed to invoke tools
+
 ## Architecture
 
 ### High-Level Components
@@ -55,12 +84,20 @@ Forge Agent is a production-quality, long-term infrastructure project for autono
 
 #### 1. Agent Runtime (`agent/runtime/`)
 
+The Agent Runtime is the **deterministic control layer** that orchestrates all operations. It is the ONLY component that can execute actions.
+
 - **Planner**: Converts high-level goals into structured execution plans
-  - Uses LLM to break down goals into tool calls
+  - Uses an LLM as a **reasoning engine** to propose execution steps
+  - Produces a structured, machine-readable plan
   - Validates tool availability and safety constraints
+  - **Does NOT execute actions**
+  - **Does NOT have direct access to tools**
   - Returns structured plan with steps
 
 - **Executor**: Executes plans and manages tool call lifecycle
+  - Executes plans **deterministically**
+  - Owns retries, error handling, and safety checks
+  - Is the **ONLY component allowed to invoke tools**
   - Iterates through plan steps
   - Calls appropriate tools
   - Handles errors and retries
@@ -99,11 +136,21 @@ All tools implement a common `Tool` interface for consistency and extensibility.
 
 #### 3. LLM Provider (`agent/llm/`)
 
-Abstracted LLM interface supporting multiple providers:
+**The LLM is treated as an untrusted but useful reasoning component.**
+
+It:
+- Never executes code
+- Never accesses the filesystem directly
+- Never performs network or system actions
+- Only returns structured text outputs
+
+The LLM Provider is an abstracted interface supporting multiple providers:
 
 - **Base Provider**: `LLMProvider` abstract class
 - **LocalAI Provider**: Implementation for LocalAI
 - **Extensible**: Easy to add OpenAI, Anthropic, Ollama, etc.
+
+The LLM is used **exclusively** by the Planner for reasoning and plan generation. It has no direct connection to tools or execution.
 
 #### 4. Configuration (`agent/config/`)
 

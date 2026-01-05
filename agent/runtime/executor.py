@@ -1,4 +1,8 @@
-"""Execution module - executes plans and manages tool calls."""
+"""Execution module - executes plans and manages tool calls.
+
+The Executor is the ONLY component allowed to invoke tools. It executes plans
+deterministically and owns all retries, error handling, and safety checks.
+"""
 
 from typing import Any, Dict, List
 
@@ -7,7 +11,11 @@ from agent.tools.base import ToolRegistry
 
 
 class Executor:
-    """Executes plans and manages tool call lifecycle."""
+    """Executes plans and manages tool call lifecycle.
+
+    The Executor is the ONLY component allowed to invoke tools. It executes
+    plans deterministically and owns all retries, error handling, and safety checks.
+    """
 
     def __init__(self, config: AgentConfig, tool_registry: ToolRegistry):
         """Initialize executor.
@@ -20,7 +28,10 @@ class Executor:
         self.tool_registry = tool_registry
 
     async def execute(self, plan: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Execute a plan.
+        """Execute a plan deterministically.
+
+        This is the ONLY component that can invoke tools. All execution decisions,
+        retries, and safety checks are owned by the Executor.
 
         Args:
             plan: List of plan steps to execute
@@ -32,9 +43,10 @@ class Executor:
             ExecutionError: If execution fails
         """
         # TODO: Implement execution logic
-        # - Iterate through plan steps
-        # - Call appropriate tools
+        # - Iterate through plan steps deterministically
+        # - Call appropriate tools (ONLY component allowed to do this)
         # - Handle errors and retries
+        # - Enforce safety checks
         # - Collect results
         # - Return execution summary
         raise NotImplementedError("Execution not yet implemented")
