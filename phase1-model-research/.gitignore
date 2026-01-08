@@ -1,0 +1,28 @@
+# Phase 1 Results
+results/
+*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.venv
+
+# Model files (if stored locally)
+*.gguf
+*.bin
+models/
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+

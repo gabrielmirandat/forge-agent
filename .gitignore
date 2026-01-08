@@ -56,3 +56,13 @@ workspace/
 *.db
 *.sqlite
 
+# Phase-specific outputs and test artifacts
+phase*/outputs/
+phase*/tests/__pycache__/
+phase*/tests/*.pyc
+phase*/tests/.pytest_cache/
+phase*/tests/*.log
+phase*/tests/coverage/
+phase*/tests/.coverage
+phase*/tests/htmlcov/
+

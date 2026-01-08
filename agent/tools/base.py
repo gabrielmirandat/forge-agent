@@ -1,4 +1,8 @@
-"""Base tool interface and registry."""
+"""Base tool interface and registry.
+
+Tools are the execution layer of the system. They can only be invoked by the
+Executor component. The LLM and Planner have no direct access to tools.
+"""
 
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
@@ -16,7 +20,12 @@ class ToolResult(BaseModel):
 
 
 class Tool(ABC):
-    """Base class for all tools."""
+    """Base class for all tools.
+
+    Tools are the execution layer. They can only be invoked by the Executor.
+    The LLM and Planner have no direct access to tools - they only propose
+    tool calls that the Executor validates and executes.
+    """
 
     def __init__(self, config: Dict[str, Any]):
         """Initialize tool with configuration.
@@ -42,6 +51,9 @@ class Tool(ABC):
     @abstractmethod
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Execute tool operation.
+
+        This method is called by the Executor component. Tools are never
+        invoked directly by the LLM or Planner.
 
         Args:
             **kwargs: Tool-specific parameters
