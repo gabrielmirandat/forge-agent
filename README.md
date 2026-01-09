@@ -53,9 +53,12 @@ python3 phase2-planner/tests/test_phase2.py
 
 ## Documentation
 
-- [Setup Guide](SETUP.md) - Development environment setup
+- [Documentation Index](docs/README.md) - Complete documentation index
+- [Setup Guide](docs/SETUP.md) - Development environment setup
+- [Project Structure](docs/PROJECT_STRUCTURE.md) - Project structure overview
 - [Phase 1](phase1-model-research/README.md) - Model evaluation
 - [Phase 2](phase2-planner/README.md) - Planner implementation
+- [Smoke Tests](smoke_test/README.md) - Smoke test execution guide
 
 ## Core Principles
 

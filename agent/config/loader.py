@@ -28,6 +28,12 @@ class LLMConfig(BaseModel):
     timeout: int = Field(default=300, gt=0, description="Request timeout in seconds")
 
 
+class HumanInTheLoopConfig(BaseModel):
+    """Human-in-the-Loop configuration."""
+
+    enabled: bool = Field(default=False, description="Enable HITL approval workflow")
+
+
 class RuntimeConfig(BaseModel):
     """Runtime execution configuration."""
 
@@ -45,6 +51,9 @@ class AgentConfig(BaseModel):
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+    human_in_the_loop: HumanInTheLoopConfig = Field(
+        default_factory=HumanInTheLoopConfig, description="Human-in-the-Loop configuration"
+    )
 
 
 class ConfigLoader:

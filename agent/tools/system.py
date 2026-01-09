@@ -29,12 +29,12 @@ class SystemTool(Tool):
         super().__init__(config)
         self.allowed_operations = set(config.get("allowed_operations", ["status", "info"]))
 
-    async def execute(self, operation: str, **kwargs: Any) -> ToolResult:
+    async def execute(self, operation: str, arguments: dict[str, Any]) -> ToolResult:
         """Execute system operation.
 
         Args:
-            operation: Operation type (status, info)
-            **kwargs: Additional parameters
+            operation: Operation type (get_status, get_info)
+            arguments: Operation arguments dict (typically empty for system operations)
 
         Returns:
             Tool execution result
@@ -43,17 +43,20 @@ class SystemTool(Tool):
             return ToolResult(success=False, output=None, error="System tool is disabled")
 
         if operation not in self.allowed_operations:
-            return ToolResult(
-                success=False, output=None, error=f"Operation not allowed: {operation}"
-            )
+            from agent.runtime.schema import OperationNotSupportedError
+            raise OperationNotSupportedError(self.name, operation)
 
         try:
-            if operation == "status":
+            # Map operation names from schema to internal methods
+            if operation == "get_status":
                 return await self._status()
-            elif operation == "info":
+            elif operation == "get_info":
                 return await self._info()
             else:
-                return ToolResult(success=False, output=None, error=f"Unknown operation: {operation}")
+                from agent.runtime.schema import OperationNotSupportedError
+                raise OperationNotSupportedError(self.name, operation)
+        except OperationNotSupportedError:
+            raise
         except Exception as e:
             return ToolResult(success=False, output=None, error=str(e))
 

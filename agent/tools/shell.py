@@ -48,18 +48,29 @@ class ShellTool(Tool):
 
         return True
 
-    async def execute(self, command: str, **kwargs: Any) -> ToolResult:
+    async def execute(self, operation: str, arguments: dict[str, Any]) -> ToolResult:
         """Execute shell command.
 
         Args:
-            command: Shell command to execute
-            **kwargs: Additional parameters (cwd, env, timeout)
+            operation: Operation type (execute_command)
+            arguments: Operation arguments dict with 'command' and optional 'cwd', 'env', 'timeout'
 
         Returns:
             Tool execution result
         """
         if not self.enabled:
             return ToolResult(success=False, output=None, error="Shell tool is disabled")
+
+        # Extract command from arguments
+        if operation != "execute_command":
+            from agent.runtime.schema import OperationNotSupportedError
+            raise OperationNotSupportedError(self.name, operation)
+
+        command = arguments.get("command")
+        if not command:
+            return ToolResult(
+                success=False, output=None, error="Missing required argument: 'command'"
+            )
 
         if not self._check_command(command):
             return ToolResult(

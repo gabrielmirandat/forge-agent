@@ -30,13 +30,12 @@ class GitTool(Tool):
         self.auto_commit = config.get("auto_commit", False)
         self.commit_template = config.get("commit_message_template", "Agent: {description}")
 
-    async def execute(self, operation: str, repo_path: str, **kwargs: Any) -> ToolResult:
+    async def execute(self, operation: str, arguments: dict[str, Any]) -> ToolResult:
         """Execute Git operation.
 
         Args:
-            operation: Operation type (branch, commit, push, status, diff)
-            repo_path: Path to repository
-            **kwargs: Operation-specific parameters
+            operation: Operation type (create_branch, commit, push, status, diff)
+            arguments: Operation arguments dict with 'repo_path' and operation-specific keys
 
         Returns:
             Tool execution result
@@ -44,29 +43,35 @@ class GitTool(Tool):
         if not self.enabled:
             return ToolResult(success=False, output=None, error="Git tool is disabled")
 
+        # Extract repo_path from arguments
+        repo_path = arguments.get("repo_path", ".")
         repo = Path(repo_path).expanduser().resolve()
 
         if not repo.exists():
             return ToolResult(success=False, output=None, error=f"Repository not found: {repo_path}")
 
         try:
-            if operation == "branch":
-                branch_name = kwargs.get("branch_name", "")
+            # Map operation names from schema to internal methods
+            if operation == "create_branch":
+                branch_name = arguments.get("branch_name", "")
                 return await self._create_branch(repo, branch_name)
             elif operation == "commit":
-                message = kwargs.get("message", "")
-                files = kwargs.get("files", [])
+                message = arguments.get("message", "")
+                files = arguments.get("files", [])
                 return await self._commit(repo, message, files)
             elif operation == "push":
-                branch = kwargs.get("branch", "")
-                remote = kwargs.get("remote", "origin")
+                branch = arguments.get("branch", "")
+                remote = arguments.get("remote", "origin")
                 return await self._push(repo, branch, remote)
             elif operation == "status":
                 return await self._status(repo)
             elif operation == "diff":
                 return await self._diff(repo)
             else:
-                return ToolResult(success=False, output=None, error=f"Unknown operation: {operation}")
+                from agent.runtime.schema import OperationNotSupportedError
+                raise OperationNotSupportedError(self.name, operation)
+        except OperationNotSupportedError:
+            raise
         except Exception as e:
             return ToolResult(success=False, output=None, error=str(e))
 

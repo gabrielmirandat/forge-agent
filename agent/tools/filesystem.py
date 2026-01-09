@@ -56,19 +56,25 @@ class FilesystemTool(Tool):
 
         return False
 
-    async def execute(self, operation: str, path: str, **kwargs: Any) -> ToolResult:
+    async def execute(self, operation: str, arguments: dict[str, Any]) -> ToolResult:
         """Execute filesystem operation.
 
         Args:
-            operation: Operation type (read, write, list, create, delete)
-            path: File or directory path
-            **kwargs: Additional operation-specific parameters
+            operation: Operation type (read_file, write_file, list_directory, create_file, delete_file)
+            arguments: Operation arguments dict with 'path' and operation-specific keys
 
         Returns:
             Tool execution result
         """
         if not self.enabled:
             return ToolResult(success=False, output=None, error="Filesystem tool is disabled")
+
+        # Extract path from arguments
+        path = arguments.get("path")
+        if not path:
+            return ToolResult(
+                success=False, output=None, error="Missing required argument: 'path'"
+            )
 
         file_path = Path(path).expanduser().resolve()
 
@@ -78,19 +84,23 @@ class FilesystemTool(Tool):
             )
 
         try:
-            if operation == "read":
+            # Map operation names from schema to internal methods
+            if operation == "read_file":
                 return await self._read(file_path)
-            elif operation == "write":
-                content = kwargs.get("content", "")
+            elif operation == "write_file":
+                content = arguments.get("content", "")
                 return await self._write(file_path, content)
-            elif operation == "list":
+            elif operation == "list_directory":
                 return await self._list(file_path)
-            elif operation == "create":
-                return await self._create(file_path, kwargs.get("is_dir", False))
-            elif operation == "delete":
+            elif operation == "create_file":
+                return await self._create(file_path, arguments.get("is_dir", False))
+            elif operation == "delete_file":
                 return await self._delete(file_path)
             else:
-                return ToolResult(success=False, output=None, error=f"Unknown operation: {operation}")
+                from agent.runtime.schema import OperationNotSupportedError
+                raise OperationNotSupportedError(self.name, operation)
+        except OperationNotSupportedError:
+            raise
         except Exception as e:
             return ToolResult(success=False, output=None, error=str(e))
 

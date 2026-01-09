@@ -32,12 +32,12 @@ class GitHubTool(Tool):
         self.pr_title_template = config.get("pr_title_template", "Agent: {title}")
         self.pr_body_template = config.get("pr_body_template", "Automated changes by forge-agent")
 
-    async def execute(self, operation: str, **kwargs: Any) -> ToolResult:
+    async def execute(self, operation: str, arguments: dict[str, Any]) -> ToolResult:
         """Execute GitHub operation.
 
         Args:
-            operation: Operation type (create_pr, list_prs, comment, get_pr)
-            **kwargs: Operation-specific parameters
+            operation: Operation type (create_pr, list_prs, comment_pr)
+            arguments: Operation arguments dict with operation-specific keys
 
         Returns:
             Tool execution result
@@ -49,28 +49,28 @@ class GitHubTool(Tool):
             return ToolResult(success=False, output=None, error="GITHUB_TOKEN not set")
 
         try:
+            # Map operation names from schema to internal methods
             if operation == "create_pr":
-                repo = kwargs.get("repo", "")
-                title = kwargs.get("title", "")
-                body = kwargs.get("body", "")
-                head = kwargs.get("head", "")
-                base = kwargs.get("base", "main")
+                repo = arguments.get("repo", "")
+                title = arguments.get("title", "")
+                body = arguments.get("body", "")
+                head = arguments.get("head", "")
+                base = arguments.get("base", "main")
                 return await self._create_pr(repo, title, body, head, base)
             elif operation == "list_prs":
-                repo = kwargs.get("repo", "")
-                state = kwargs.get("state", "open")
+                repo = arguments.get("repo", "")
+                state = arguments.get("state", "open")
                 return await self._list_prs(repo, state)
-            elif operation == "comment":
-                repo = kwargs.get("repo", "")
-                pr_number = kwargs.get("pr_number", 0)
-                body = kwargs.get("body", "")
+            elif operation == "comment_pr":
+                repo = arguments.get("repo", "")
+                pr_number = arguments.get("pr_number", 0)
+                body = arguments.get("body", "")
                 return await self._comment(repo, pr_number, body)
-            elif operation == "get_pr":
-                repo = kwargs.get("repo", "")
-                pr_number = kwargs.get("pr_number", 0)
-                return await self._get_pr(repo, pr_number)
             else:
-                return ToolResult(success=False, output=None, error=f"Unknown operation: {operation}")
+                from agent.runtime.schema import OperationNotSupportedError
+                raise OperationNotSupportedError(self.name, operation)
+        except OperationNotSupportedError:
+            raise
         except Exception as e:
             return ToolResult(success=False, output=None, error=str(e))
 
