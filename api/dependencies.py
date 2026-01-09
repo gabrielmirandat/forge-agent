@@ -67,12 +67,23 @@ def get_tool_registry(config: AgentConfig = Depends(get_config)) -> ToolRegistry
     """
     registry = ToolRegistry()
 
-    # Register all tools
-    registry.register(FilesystemTool(config.workspace.model_dump()))
-    registry.register(GitTool(config.workspace.model_dump()))
-    registry.register(GitHubTool(config.workspace.model_dump()))
-    registry.register(ShellTool(config.workspace.model_dump()))
-    registry.register(SystemTool(config.workspace.model_dump()))
+    # Get tool configurations (with security settings)
+    tools_config = config.tools.model_dump()
+    workspace_config = config.workspace.model_dump()
+
+    # Register all tools with their security configurations
+    # Merge workspace config with tool-specific config
+    filesystem_config = {**workspace_config, **tools_config.get("filesystem", {})}
+    git_config = {**workspace_config, **tools_config.get("git", {})}
+    github_config = {**workspace_config, **tools_config.get("github", {})}
+    shell_config = {**workspace_config, **tools_config.get("shell", {})}
+    system_config = {**workspace_config, **tools_config.get("system", {})}
+
+    registry.register(FilesystemTool(filesystem_config))
+    registry.register(GitTool(git_config))
+    registry.register(GitHubTool(github_config))
+    registry.register(ShellTool(shell_config))
+    registry.register(SystemTool(system_config))
 
     return registry
 

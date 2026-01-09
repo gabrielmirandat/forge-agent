@@ -43,6 +43,66 @@ class RuntimeConfig(BaseModel):
     safety_checks: bool = Field(default=True, description="Enable safety checks")
 
 
+class ToolsConfig(BaseModel):
+    """Tool security and configuration settings."""
+
+    filesystem: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "enabled": True,
+            "allowed_paths": ["~/repos"],
+            "restricted_paths": ["/", "/home", "/etc", "/usr", "/var", "/sys", "/proc"],
+        },
+        description="Filesystem tool configuration with security paths",
+    )
+    git: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "enabled": True,
+            "default_branch_prefix": "agent/",
+            "auto_commit": False,
+        },
+        description="Git tool configuration",
+    )
+    github: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "enabled": True,
+            "base_url": "https://api.github.com",
+            "auto_create_pr": False,
+        },
+        description="GitHub tool configuration",
+    )
+    shell: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "enabled": True,
+            "allowed_commands": ["git", "npm", "python", "python3", "docker", "docker-compose"],
+            "restricted_commands": ["rm", "sudo", "chmod", "chown", "mkfs", "fdisk", "dd", "mount", "umount"],
+        },
+        description="Shell tool configuration with security command restrictions",
+    )
+    system: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "enabled": True,
+            "allowed_operations": ["status", "info"],
+        },
+        description="System tool configuration",
+    )
+
+
+class SecurityConfig(BaseModel):
+    """Security configuration."""
+
+    sandbox_enabled: bool = Field(default=False, description="Enable sandbox mode")
+    require_confirmation: bool = Field(default=False, description="Require confirmation for operations")
+    audit_log_path: str = Field(default="./workspace/audit.log", description="Audit log path")
+
+
+class LoggingConfig(BaseModel):
+    """Logging configuration."""
+
+    level: str = Field(default="INFO", description="Log level")
+    format: str = Field(default="json", description="Log format")
+    output_path: str = Field(default="./workspace/logs", description="Log output path")
+
+
 class AgentConfig(BaseModel):
     """Main agent configuration."""
 
@@ -51,6 +111,11 @@ class AgentConfig(BaseModel):
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+    tools: ToolsConfig = Field(
+        default_factory=ToolsConfig, description="Tool security and configuration (CRITICAL for security)"
+    )
+    security: SecurityConfig = Field(default_factory=SecurityConfig, description="Security settings")
+    logging: LoggingConfig = Field(default_factory=LoggingConfig, description="Logging settings")
     human_in_the_loop: HumanInTheLoopConfig = Field(
         default_factory=HumanInTheLoopConfig, description="Human-in-the-Loop configuration"
     )

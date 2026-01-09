@@ -40,7 +40,7 @@ def check_metrics() -> bool:
         True if metrics endpoint returns Prometheus format
     """
     try:
-        response = httpx.get(f"{BACKEND_URL}/metrics", timeout=5)
+        response = httpx.get(f"{BACKEND_URL}/metrics", timeout=5, follow_redirects=True)
         if response.status_code != 200:
             print(f"[API Check] Metrics check failed: HTTP {response.status_code}")
             return False

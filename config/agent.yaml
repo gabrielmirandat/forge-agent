@@ -1,53 +1,51 @@
-# Agent Configuration
-# This file controls the behavior of the autonomous code agent
-
 agent:
-  name: "forge-agent"
-  version: "0.1.0"
+  name: forge-agent
+  version: 0.1.0
   
-  # Workspace configuration
   workspace:
-    base_path: "~/repos"
+    base_path: ~/repos
     persistent: true
     cleanup_on_exit: false
-
-  # LLM Configuration
+  
   llm:
-    provider: "localai"
-    base_url: "http://localai:8080"
-    model: "gpt-3.5-turbo"
-    temperature: 0.7
+    provider: ollama
+    base_url: http://localhost:11434
+    model: qwen2.5-coder:7b
+    temperature: 0.1
     max_tokens: 4096
     timeout: 300
-
-  # Planning and execution
+  
   runtime:
     max_iterations: 50
     timeout_seconds: 3600
     enable_parallel_tools: false
     safety_checks: true
-
-  # Tool configuration
+  
+  # Tool configuration - SECURITY CRITICAL
   tools:
     filesystem:
       enabled: true
       allowed_paths:
-        - "~/repos"
+        - ~/repos
       restricted_paths:
-        - "/"
-        - "/home"
-        - "/etc"
+        - /
+        - /home
+        - /etc
+        - /usr
+        - /var
+        - /sys
+        - /proc
     
     git:
       enabled: true
-      default_branch_prefix: "agent/"
+      default_branch_prefix: agent/
       auto_commit: false
       commit_message_template: "Agent: {description}"
     
     github:
       enabled: true
       # Token should be set via environment variable GITHUB_TOKEN
-      base_url: "https://api.github.com"
+      base_url: https://api.github.com
       auto_create_pr: false
       pr_title_template: "Agent: {title}"
       pr_body_template: "Automated changes by forge-agent"
@@ -55,30 +53,40 @@ agent:
     shell:
       enabled: true
       allowed_commands:
-        - "git"
-        - "npm"
-        - "python"
-        - "docker"
+        - git
+        - npm
+        - python
+        - python3
+        - docker
+        - docker-compose
       restricted_commands:
-        - "rm"
-        - "sudo"
-        - "chmod"
+        - rm
+        - sudo
+        - chmod
+        - chown
+        - mkfs
+        - fdisk
+        - dd
+        - mount
+        - umount
     
     system:
       enabled: true
       allowed_operations:
-        - "status"
-        - "info"
-
-  # Security
+        - status
+        - info
+  
+  # Security settings
   security:
     sandbox_enabled: false
     require_confirmation: false
-    audit_log_path: "./workspace/audit.log"
-
+    audit_log_path: ./workspace/audit.log
+  
   # Logging
   logging:
-    level: "INFO"
-    format: "json"
-    output_path: "./workspace/logs"
-
+    level: INFO
+    format: json
+    output_path: ./workspace/logs
+  
+  human_in_the_loop:
+    enabled: false

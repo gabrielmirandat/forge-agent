@@ -48,6 +48,13 @@ def get_latest_run() -> tuple[bool, dict | None]:
             return False, None
 
         # Convert row to dict
+        # Handle approval_status (may not exist in old records)
+        approval_status = (
+            row["approval_status"]
+            if "approval_status" in row.keys()
+            else "pending"
+        )
+
         run_data = {
             "run_id": row["run_id"],
             "plan_id": row["plan_id"],
@@ -57,7 +64,7 @@ def get_latest_run() -> tuple[bool, dict | None]:
                 json.loads(row["execution_result"]) if row["execution_result"] else None
             ),
             "created_at": row["created_at"],
-            "approval_status": row.get("approval_status", "pending"),
+            "approval_status": approval_status,
         }
 
         conn.close()

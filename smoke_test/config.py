@@ -25,7 +25,7 @@ DATABASE_PATH = PROJECT_ROOT / "forge_agent.db"
 
 # Test goals
 SUCCESS_GOAL = "List files in the current directory"
-FAILURE_GOAL = "Delete a file that does not exist: /nonexistent/file.txt"
+FAILURE_GOAL = "Use a tool that does not exist: nonexistent_tool with operation invalid_op"
 
 # Browser settings
 HEADLESS = False  # Must be False for visual validation

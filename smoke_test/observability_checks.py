@@ -13,7 +13,7 @@ def check_metrics_incremented() -> bool:
         True if key metrics show activity
     """
     try:
-        response = httpx.get(f"{BACKEND_URL}/metrics", timeout=5)
+        response = httpx.get(f"{BACKEND_URL}/metrics", timeout=5, follow_redirects=True)
         if response.status_code != 200:
             print("[Observability Check] Failed to fetch metrics")
             return False
