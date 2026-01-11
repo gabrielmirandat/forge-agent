@@ -42,3 +42,8 @@ python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 
+[tool.pytest.ini_options]
+markers = [
+    "e2e: end-to-end browser tests",
+    "smoke: minimal smoke tests for system liveness",
+]

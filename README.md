@@ -58,7 +58,7 @@ python3 phase2-planner/tests/test_phase2.py
 - [Project Structure](docs/PROJECT_STRUCTURE.md) - Project structure overview
 - [Phase 1](phase1-model-research/README.md) - Model evaluation
 - [Phase 2](phase2-planner/README.md) - Planner implementation
-- [Smoke Tests](smoke_test/README.md) - Smoke test execution guide
+- [Tests](tests/README.md) - Test suite overview (smoke + E2E)
 
 ## Core Principles
 

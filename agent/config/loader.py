@@ -87,14 +87,6 @@ class ToolsConfig(BaseModel):
     )
 
 
-class SecurityConfig(BaseModel):
-    """Security configuration."""
-
-    sandbox_enabled: bool = Field(default=False, description="Enable sandbox mode")
-    require_confirmation: bool = Field(default=False, description="Require confirmation for operations")
-    audit_log_path: str = Field(default="./workspace/audit.log", description="Audit log path")
-
-
 class LoggingConfig(BaseModel):
     """Logging configuration."""
 
@@ -114,7 +106,6 @@ class AgentConfig(BaseModel):
     tools: ToolsConfig = Field(
         default_factory=ToolsConfig, description="Tool security and configuration (CRITICAL for security)"
     )
-    security: SecurityConfig = Field(default_factory=SecurityConfig, description="Security settings")
     logging: LoggingConfig = Field(default_factory=LoggingConfig, description="Logging settings")
     human_in_the_loop: HumanInTheLoopConfig = Field(
         default_factory=HumanInTheLoopConfig, description="Human-in-the-Loop configuration"

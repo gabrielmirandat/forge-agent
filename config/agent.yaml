@@ -22,11 +22,31 @@ agent:
     safety_checks: true
   
   # Tool configuration - SECURITY CRITICAL
+  # 
+  # Each tool has explicit boundaries and responsibilities:
+  # - filesystem: Structured file I/O with path validation (NO execution)
+  # - shell: Command execution with validation (ONLY when execution semantics required)
+  # - system: Side-effect-free system introspection (NO execution, NO file I/O)
+  # - git: Structured Git operations (NO arbitrary commands)
+  # - github: GitHub API operations (NO file I/O, NO Git operations)
+  #
+  # See docs/tools/*.md for full contract documentation.
   tools:
+    # FILESYSTEM TOOL
+    # Purpose: Structured file and directory operations with explicit path validation
+    # Contract: Read/write files, list directories, create/delete files
+    # Forbidden: Execution semantics, system introspection, network I/O
+    # Security: Path validation is mandatory, allowed_paths take priority over restricted_paths
+    # Overlap: Prefer filesystem for file I/O, use shell only when execution is required
     filesystem:
       enabled: true
+      # Allowed paths: Explicitly allowed directories (subdirectories are also allowed)
+      # Paths are resolved and normalized before validation
+      # ~ is expanded to home directory automatically
       allowed_paths:
         - ~/repos
+      # Restricted paths: System directories that should never be accessed
+      # Note: allowed_paths take priority (e.g., ~/repos is allowed even if /home is restricted)
       restricted_paths:
         - /
         - /home
@@ -36,12 +56,24 @@ agent:
         - /sys
         - /proc
     
+    # GIT TOOL
+    # Purpose: Structured Git repository operations
+    # Contract: Create branches, commits, pushes, status, diffs
+    # Forbidden: Arbitrary git commands, file I/O, execution semantics
+    # Security: Structured API only, no arbitrary command execution
+    # Overlap: Prefer git tool for Git operations, use shell only if structured API doesn't support operation
     git:
       enabled: true
       default_branch_prefix: agent/
       auto_commit: false
       commit_message_template: "Agent: {description}"
     
+    # GITHUB TOOL
+    # Purpose: Structured GitHub API operations
+    # Contract: Create PRs, list PRs, comment on PRs
+    # Forbidden: Arbitrary API calls, file I/O, Git operations
+    # Security: Authentication required (GITHUB_TOKEN), structured API only
+    # Overlap: Use github for GitHub API, use git for local Git operations
     github:
       enabled: true
       # Token should be set via environment variable GITHUB_TOKEN
@@ -50,15 +82,30 @@ agent:
       pr_title_template: "Agent: {title}"
       pr_body_template: "Automated changes by forge-agent"
     
+    # SHELL TOOL
+    # Purpose: Command execution with explicit execution semantics
+    # Contract: Execute commands, run programs, capture output
+    # Forbidden: Information-only operations (use system/filesystem tools instead)
+    # Security: Command validation is mandatory, only allowed_commands can be executed
+    # Overlap: 
+    #   - vs filesystem: Prefer filesystem for file I/O, use shell only when execution is required
+    #   - vs system: Prefer system for introspection, use shell only when you need to run a command
+    # Priority: Shell should be LAST resort - prefer structured tools (filesystem, system, git) when possible
     shell:
       enabled: true
+      # Allowed commands: Base commands that can be executed (first word of command)
+      # Arguments are not validated (trusted if base command is allowed)
+      # Only add commands that require execution semantics
       allowed_commands:
+        - ls  # Note: Prefer filesystem.list_directory when possible
         - git
         - npm
         - python
         - python3
         - docker
         - docker-compose
+      # Restricted commands: Commands that should NEVER be executed
+      # These are blocked even if they appear in allowed_commands (restricted takes priority)
       restricted_commands:
         - rm
         - sudo
@@ -70,17 +117,22 @@ agent:
         - mount
         - umount
     
+    # SYSTEM TOOL
+    # Purpose: Side-effect-free system introspection
+    # Contract: Query platform info, Python version, system status
+    # Forbidden: Execution semantics, file operations, state mutation
+    # Security: All operations MUST be read-only and side-effect-free
+    # Overlap:
+    #   - vs shell: Prefer system for introspection, use shell only when you need to run a command
+    #   - vs filesystem: Prefer system for system metadata, use filesystem for file contents
+    # Priority: System should be preferred for introspection over shell commands
     system:
       enabled: true
+      # Allowed operations: Side-effect-free introspection operations only
+      # No execution, no file I/O, no state mutation
       allowed_operations:
-        - status
-        - info
-  
-  # Security settings
-  security:
-    sandbox_enabled: false
-    require_confirmation: false
-    audit_log_path: ./workspace/audit.log
+        - get_status  # Get system operational status
+        - get_info    # Get platform information (OS, Python version, architecture)
   
   # Logging
   logging:

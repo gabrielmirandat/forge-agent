@@ -70,10 +70,34 @@ class Planner:
 
         tools_text = "\n".join(tool_descriptions)
 
+        # Get filesystem security constraints from config
+        filesystem_constraints = ""
+        if hasattr(self.config, "tools") and hasattr(self.config.tools, "filesystem"):
+            fs_config = self.config.tools.filesystem
+            allowed_paths = fs_config.get("allowed_paths", [])
+            if allowed_paths:
+                # Expand ~ to show actual paths
+                from pathlib import Path
+                expanded_paths = [str(Path(p).expanduser().resolve()) for p in allowed_paths]
+                filesystem_constraints = f"\n\nFILESYSTEM TOOL SECURITY CONSTRAINTS:\n"
+                filesystem_constraints += f"- Allowed paths: {', '.join(expanded_paths)}\n"
+                filesystem_constraints += f"- Path format: Use absolute paths (e.g., {expanded_paths[0]}/...) or paths relative to allowed directories\n"
+                filesystem_constraints += f"- Tilde (~) expansion: The system will automatically expand ~ to the home directory\n"
+                filesystem_constraints += f"- IMPORTANT: All filesystem operations MUST use paths within the allowed directories listed above\n"
+
         return f"""You are a planning assistant for an autonomous code agent. Your role is to break down high-level goals into structured execution plans.
 
 You have access to the following tools:
 {tools_text}
+{filesystem_constraints}
+
+TOOL PRIORITY RULES (CRITICAL):
+- Prefer structured tools (filesystem, system, git) over execution tools (shell)
+- Use filesystem tool for file I/O (read_file, list_directory, write_file)
+- Use system tool for system introspection (get_info, get_status)
+- Use git tool for Git operations (create_branch, commit, push)
+- Use shell tool ONLY when execution semantics are required (running scripts, programs)
+- NEVER use shell tool for operations that structured tools can handle
 
 CRITICAL CONSTRAINTS:
 1. You can ONLY use the tools and operations listed above
@@ -85,6 +109,8 @@ CRITICAL CONSTRAINTS:
 7. You cannot execute code directly
 8. You cannot access the filesystem directly
 9. You must propose steps, not execute them
+10. For filesystem operations: Use absolute paths or paths relative to allowed directories. The system will expand ~ automatically.
+11. Tool selection priority: filesystem > system > git > shell (use shell only when execution is required)
 
 OUTPUT FORMAT (valid JSON only, EXACTLY ONE JSON object):
 {{

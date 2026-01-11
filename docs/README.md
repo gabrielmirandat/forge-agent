@@ -29,9 +29,10 @@ Phase-specific documentation is located in their respective directories:
 - `phase8-hitl/` - Human-in-the-Loop (HITL)
 - `phase9-observability/` - Observability implementation
 
-## Smoke Tests
+## Tests
 
-Smoke test documentation and code:
-- `smoke_test/README.md` - Smoke test manual execution guide
-- `smoke_test/run_smoke_test.py` - Automated smoke test
+Test suite documentation:
+- `tests/README.md` - Test suite overview (smoke + E2E)
+- `tests/smoke/README.md` - Smoke tests (minimal, agent-agnostic)
+- `tests/e2e/README.md` - E2E tests (comprehensive, tool-specific)
 

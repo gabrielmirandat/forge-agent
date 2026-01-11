@@ -1,32 +1,39 @@
-# Smoke Test Implementation Summary
+# Test Suite Implementation Summary
 
 ## ✅ Implementation Complete
 
-A production-grade automated smoke test has been implemented for end-to-end validation.
+A comprehensive test suite has been implemented with smoke tests and E2E tests.
 
-## 📁 Files Created
+## 📁 Test Structure
 
 ```
-smoke_test/
-├── run_smoke_test.py        # Main entry point (single command)
-├── backend.py               # Start/stop API
-├── frontend.py              # Start/stop frontend
-├── api_checks.py            # API-level assertions
-├── ui_checks.py             # Playwright browser assertions
-├── storage_checks.py        # SQLite validations
-├── observability_checks.py   # Logs + metrics validation
-├── config.py                # Ports, timeouts
-├── __init__.py              # Package marker
-└── README.md                # Manual execution guide
+tests/
+├── smoke/                   # Smoke tests (minimal, agent-agnostic)
+│   ├── test_health.py      # Health checks
+│   ├── test_basic_plan.py  # Basic planning
+│   ├── test_basic_execution.py  # Basic execution
+│   └── README.md           # Smoke test documentation
+└── e2e/                     # E2E tests (comprehensive, tool-specific)
+    ├── scenarios/          # Test scenarios by tool/workflow
+    ├── runner.py           # Test runner
+    ├── assertions.py      # Assertion helpers
+    └── README.md           # E2E test documentation
 ```
 
 ## 🎯 Features
 
 ### 1️⃣ Fully Automated Smoke Test
 
-**Single Command Execution:**
+**Running Tests:**
 ```bash
-python smoke_test/run_smoke_test.py
+# Smoke tests (minimal, agent-agnostic)
+pytest tests/smoke/ -v
+
+# E2E tests (comprehensive, tool-specific)
+pytest tests/e2e/ -v
+
+# All tests
+pytest tests/ -v
 ```
 
 **What It Does:**
@@ -126,15 +133,25 @@ python smoke_test/run_smoke_test.py
 
 ### Automated Execution
 ```bash
-cd /home/gabriel-miranda/repos/forge-agent
-source .venv/bin/activate
-pip install -r requirements.txt  # Installs playwright
-playwright install chromium      # Install browser
-python smoke_test/run_smoke_test.py
+# Smoke tests (minimal, agent-agnostic)
+pytest tests/smoke/ -v
+
+# E2E tests (comprehensive, tool-specific)
+pytest tests/e2e/ -v
+
+# All tests
+pytest tests/ -v
+
+# Or via Makefile
+make test-smoke  # Smoke tests only
+make test-e2e    # E2E tests only
+make test        # All tests
 ```
 
 ### Manual Execution
-See `smoke_test/README.md` for complete step-by-step instructions.
+See `tests/README.md` for complete test suite overview.
+See `tests/smoke/README.md` for smoke test details.
+See `tests/e2e/README.md` for E2E test details.
 
 ## 📝 Notes
 
