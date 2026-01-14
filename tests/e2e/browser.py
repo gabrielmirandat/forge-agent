@@ -18,6 +18,9 @@ class BrowserHelper:
     # Waiting for a run result is not a "DOM interaction" per se; it's waiting for backend work.
     # Implemented as repeated short (<=1s) DOM waits until a total timeout elapses.
     DEFAULT_RUN_RESULT_TIMEOUT_MS = 60000
+    # Delays for visible mode (headless=false)
+    VISIBLE_MODE_INTERACTION_DELAY_MS = 300  # 300ms after each user interaction
+    VISIBLE_MODE_TEST_DELAY_MS = 1000  # 1s between tests
 
     def __init__(self, headless: Optional[bool] = None, frontend_url: str = "http://localhost:3000"):
         """Initialize browser helper.
@@ -36,6 +39,15 @@ class BrowserHelper:
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
+
+    def _delay_if_visible(self, delay_ms: int) -> None:
+        """Add delay if browser is in visible mode (headless=false).
+        
+        Args:
+            delay_ms: Delay in milliseconds
+        """
+        if not self.headless:
+            time.sleep(delay_ms / 1000.0)
 
     def start(self) -> None:
         """Start browser and create page."""
@@ -267,6 +279,7 @@ class BrowserHelper:
                 # Playwright will auto-wait for textarea to be visible and enabled
                 goal_textarea = self.page.locator("textarea").first
                 goal_textarea.fill(goal, timeout=interaction_timeout)
+                self._delay_if_visible(self.VISIBLE_MODE_INTERACTION_DELAY_MS)
                 print(f"[BROWSER] ✓ Goal filled: {goal[:50]}...", file=sys.stderr, flush=True)
                 self._log_dom_state("AFTER_FILL_GOAL")
             except Exception as e:
@@ -281,6 +294,7 @@ class BrowserHelper:
                 try:
                     context_textarea = self.page.locator("textarea").nth(1)
                     context_textarea.fill(context, timeout=interaction_timeout)
+                    self._delay_if_visible(self.VISIBLE_MODE_INTERACTION_DELAY_MS)
                     print(f"[BROWSER] ✓ Context filled", file=sys.stderr, flush=True)
                     self._log_dom_state("AFTER_FILL_CONTEXT")
                 except Exception as e:
@@ -295,6 +309,7 @@ class BrowserHelper:
                 submit_button = self.page.locator("button:has-text('Run'):not([disabled])")
                 print(f"[BROWSER] Found submit button, clicking...", file=sys.stderr, flush=True)
                 submit_button.click(timeout=interaction_timeout)
+                self._delay_if_visible(self.VISIBLE_MODE_INTERACTION_DELAY_MS)
                 print(f"[BROWSER] ✓ Submit button clicked. Waiting 500ms for UI to update...", file=sys.stderr, flush=True)
                 time.sleep(0.5)  # Small delay for UI to start updating
                 self._log_dom_state("AFTER_CLICK_RUN")
@@ -486,10 +501,21 @@ class BrowserHelper:
             try:
                 cells = row.query_selector_all("td")
                 if len(cells) >= 4:
-                    # Extract run_id from link
+                    # Extract run_id from link href (not text, as text is truncated)
                     link = cells[0].query_selector("a")
-                    run_id_text = link.text_content() if link else cells[0].text_content()
-                    run_id = run_id_text.strip() if run_id_text else ""
+                    if link:
+                        # Get full run_id from href attribute: /runs/{run_id}
+                        href = link.get_attribute("href") or ""
+                        if href.startswith("/runs/"):
+                            run_id = href.replace("/runs/", "").strip()
+                        else:
+                            # Fallback to text if href format is unexpected
+                            run_id_text = link.text_content()
+                            run_id = run_id_text.strip().replace("...", "") if run_id_text else ""
+                    else:
+                        # No link, try text content
+                        run_id_text = cells[0].text_content()
+                        run_id = run_id_text.strip().replace("...", "") if run_id_text else ""
 
                     # Extract objective
                     objective = cells[1].text_content()
@@ -537,6 +563,7 @@ class BrowserHelper:
                 link = self.page.locator(f"a:has-text('{run_id[:8]}')").first
                 link.wait_for(state="visible", timeout=interaction_timeout)
                 link.click(timeout=interaction_timeout)
+                self._delay_if_visible(self.VISIBLE_MODE_INTERACTION_DELAY_MS)
                 clicked_run_id = run_id
                 print(f"[BROWSER] ✓ Clicked run link", file=sys.stderr, flush=True)
             else:
@@ -552,6 +579,7 @@ class BrowserHelper:
                 
                 link.wait_for(state="visible", timeout=interaction_timeout)
                 link.click(timeout=interaction_timeout)
+                self._delay_if_visible(self.VISIBLE_MODE_INTERACTION_DELAY_MS)
                 # Extract run_id from link text
                 link_text = link.text_content()
                 clicked_run_id = link_text.strip() if link_text else ""

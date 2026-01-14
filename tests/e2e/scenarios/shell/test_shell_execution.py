@@ -1,6 +1,7 @@
 """E2E test: Shell command execution."""
 
 import json
+import time
 
 import pytest
 
@@ -11,66 +12,74 @@ from tests.e2e.storage import StorageHelper
 
 @pytest.mark.e2e
 
-def test_execute_ls_in_allowed_directory():
+def test_execute_ls_in_allowed_directory(shared_browser):
     """Test executing ls command in allowed directory (Browser + Storage)."""
     with E2ETestRunner() as runner:
         storage = StorageHelper()
         goal = "Execute ls command in ~/repos/forge-agent directory using the shell tool"
 
         # Step 1: Create run via browser UI
-        # Pass None to BrowserHelper so it reads from E2E_HEADLESS env var
-        with BrowserHelper(headless=None, frontend_url=runner.frontend_url) as browser:
-            # Create run via UI
-            browser.create_run_via_ui(goal)
-            browser.wait_for_run_result()
+        # Use shared_browser instead of creating a new one to avoid asyncio conflicts
+        browser = shared_browser
+        browser.navigate_to_frontend("/")
+        
+        # Create run via UI
+        browser.create_run_via_ui(goal)
+        browser.wait_for_run_result()
 
-            # Verify plan and execution are visible
-            assert browser.assert_plan_visible(), "Plan should be visible"
-            assert browser.assert_execution_visible(), "Execution should be visible"
+        # Small delay to ensure UI has updated
+        time.sleep(0.3)
 
-            # Step 2: Navigate to runs list and verify run appears
-            browser.navigate_to_runs_list()
-            browser.wait_for_runs_list()
+        # Verify plan and execution are visible
+        assert browser.assert_plan_visible(), "Plan should be visible"
+        assert browser.assert_execution_visible(), "Execution should be visible"
 
-            runs = browser.get_runs_from_list()
-            assert len(runs) > 0, "At least one run should appear in runs list"
+        # Small delay to ensure backend has persisted the run
+        time.sleep(0.5)
 
-            # Find our run
-            our_run = runs[0]
-            assert "ls" in our_run.get("objective", "").lower() or \
-                   "shell" in our_run.get("objective", "").lower(), \
-                   f"Run objective should match goal: {our_run.get('objective')}"
+        # Step 2: Navigate to runs list and verify run appears
+        browser.navigate_to_runs_list()
+        browser.wait_for_runs_list()
 
-            # Step 3: Click on run and verify details
-            run_id_from_list = our_run.get("run_id", "")
-            if run_id_from_list:
-                browser.click_run_in_list(run_id=run_id_from_list)
-                browser.wait_for_run_detail()
+        runs = browser.get_runs_from_list()
+        assert len(runs) > 0, "At least one run should appear in runs list"
 
-                # Verify execution is visible
-                assert browser.assert_execution_visible(), "Execution should be visible in run detail"
+        # Find our run
+        our_run = runs[0]
+        assert "ls" in our_run.get("objective", "").lower() or \
+               "shell" in our_run.get("objective", "").lower(), \
+               f"Run objective should match goal: {our_run.get('objective')}"
 
-                # Get run_id from URL
-                run_id_from_url = browser.get_run_id_from_url()
-                assert run_id_from_url, "Run ID should be in URL"
+        # Step 3: Click on run and verify details
+        run_id_from_list = our_run.get("run_id", "")
+        if run_id_from_list:
+            browser.click_run_in_list(run_id=run_id_from_list)
+            browser.wait_for_run_detail()
 
-                # Step 4: Verify in database
-                run_data = storage.assert_run_persisted(run_id_from_url)
-                assert run_data.get("execution_result"), "Execution should be persisted"
+            # Verify execution is visible
+            assert browser.assert_execution_visible(), "Execution should be visible in run detail"
 
-                # Verify execution result contains command output
-                execution_result = json.loads(run_data.get("execution_result", "{}"))
-                steps = execution_result.get("steps", [])
-                assert len(steps) > 0, "Execution should have steps"
+            # Get run_id from URL
+            run_id_from_url = browser.get_run_id_from_url()
+            assert run_id_from_url, "Run ID should be in URL"
 
-                # Check that command output is captured
-                for step in steps:
-                    if step.get("success", False):
-                        output = step.get("output", {})
-                        if isinstance(output, dict):
-                            # Shell output should contain stdout or stderr
-                            assert "stdout" in output or "stderr" in output or "return_code" in output, \
-                                f"Shell output missing expected fields: {output}"
+            # Step 4: Verify in database
+            run_data = storage.assert_run_persisted(run_id_from_url)
+            assert run_data.get("execution_result"), "Execution should be persisted"
+
+            # Verify execution result contains command output
+            execution_result = json.loads(run_data.get("execution_result", "{}"))
+            steps = execution_result.get("steps", [])
+            assert len(steps) > 0, "Execution should have steps"
+
+            # Check that command output is captured
+            for step in steps:
+                if step.get("success", False):
+                    output = step.get("output", {})
+                    if isinstance(output, dict):
+                        # Shell output should contain stdout or stderr
+                        assert "stdout" in output or "stderr" in output or "return_code" in output, \
+                            f"Shell output missing expected fields: {output}"
 
 
 @pytest.mark.e2e
@@ -96,11 +105,15 @@ def test_forbidden_command_fails(shared_browser):
         has_error = "error" in page_text.lower() or "failed" in page_text.lower()
 
         # Small delay to ensure backend has persisted the run
-        import time
         time.sleep(0.5)
 
         # Step 2: Navigate to runs list and verify run appears
         browser.navigate_to_runs_list()
+        browser.wait_for_runs_list()
+        
+        # Reload page to ensure we get fresh data from backend
+        browser.page.reload()
+        time.sleep(0.5)
         browser.wait_for_runs_list()
 
         runs = browser.get_runs_from_list()

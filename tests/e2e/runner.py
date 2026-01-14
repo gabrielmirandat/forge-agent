@@ -169,7 +169,8 @@ class E2ETestRunner:
 
     def setup(self) -> None:
         """Set up test environment."""
-        self.cleanup_database()
+        # Note: Database cleanup is done once at session start, not per test
+        # This allows runs to persist across tests in the same session
         self.cleanup_logs()
         self.start_backend()
         self.start_frontend()  # Frontend required for E2E browser tests

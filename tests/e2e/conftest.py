@@ -2,10 +2,44 @@
 
 import os
 import time
+from pathlib import Path
 
 import pytest
 
 from tests.e2e.browser import BrowserHelper
+
+
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_database_once():
+    """Clean up database once at the start of the test session.
+    
+    This ensures the database is clean before all tests run, but runs
+    created during tests persist across tests in the same session.
+    """
+    import sys
+    project_root = Path(__file__).parent.parent.parent
+    db_file = project_root / "forge_agent.db"
+    
+    if db_file.exists():
+        db_file.unlink()
+        print("[FIXTURE] Cleaned up database at session start", file=sys.stderr, flush=True)
+    
+    # Also clean logs at session start
+    log_dir = project_root / "workspace" / "logs"
+    if log_dir.exists():
+        for log_file in log_dir.glob("*.log"):
+            log_file.unlink()
+    audit_log = project_root / "workspace" / "audit.log"
+    if audit_log.exists():
+        audit_log.unlink()
+    print("[FIXTURE] Cleaned up logs at session start", file=sys.stderr, flush=True)
+    
+    yield
+    
+    # Optional: Clean up at session end (commented out to preserve data for debugging)
+    # if db_file.exists():
+    #     db_file.unlink()
+    #     print("[FIXTURE] Cleaned up database at session end", file=sys.stderr, flush=True)
 
 
 @pytest.fixture(scope="session")
@@ -84,3 +118,14 @@ def shared_browser(browser_headless, browser_delay):
     
     if not browser_headless:
         print("[E2E] Browser closed\n", file=sys.stderr, flush=True)
+
+
+@pytest.fixture(autouse=True, scope="function")
+def delay_between_tests(browser_headless):
+    """Add delay between tests when headless=false for visibility."""
+    yield
+    # Delay after test completes (before next test starts)
+    if not browser_headless:
+        import sys
+        print(f"[FIXTURE] Test completed. Waiting {BrowserHelper.VISIBLE_MODE_TEST_DELAY_MS}ms before next test...", file=sys.stderr, flush=True)
+        time.sleep(BrowserHelper.VISIBLE_MODE_TEST_DELAY_MS / 1000.0)

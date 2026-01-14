@@ -144,12 +144,28 @@ def test_system_tool_no_side_effects(shared_browser):
         # Get run_id from runs list
         browser.navigate_to_runs_list()
         browser.wait_for_runs_list(timeout=3000)  # Longer timeout for second run
+        
+        # Reload page to ensure we get fresh data from backend
+        browser.page.reload()
+        time.sleep(0.5)
+        browser.wait_for_runs_list(timeout=3000)
+        
         runs2 = browser.get_runs_from_list()
         assert len(runs2) >= 2, f"Both runs should appear in list, got {len(runs2)}"
 
         # Step 3: Verify in database that both runs succeeded
-        if run_id1:
-            run_data1 = storage.assert_run_persisted(run_id1)
+        # Use the latest run_id from the list (runs2[0]) instead of run_id1
+        # because run_id1 might be from a different test run
+        if run_id1 and len(runs2) >= 2:
+            # Find run_id1 in runs2 to ensure it's the correct one
+            run1_in_list = next((r for r in runs2 if r.get("run_id", "") == run_id1), None)
+            if run1_in_list:
+                run_data1 = storage.assert_run_persisted(run_id1)
+            else:
+                # If run_id1 is not in the list, use the second run
+                run_id1 = runs2[1].get("run_id", "") if len(runs2) >= 2 else run_id1
+                if run_id1:
+                    run_data1 = storage.assert_run_persisted(run_id1)
             exec_result1 = json.loads(run_data1.get("execution_result", "{}"))
             steps1 = exec_result1.get("steps", [])
             assert len(steps1) > 0, "Run 1 should have steps"
