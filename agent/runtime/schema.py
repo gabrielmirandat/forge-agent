@@ -57,8 +57,9 @@ class ShellOperation(str, Enum):
 class SystemOperation(str, Enum):
     """Allowed system operations."""
 
-    GET_STATUS = "get_status"
-    GET_INFO = "get_info"
+    GET_OS_INFO = "get_os_info"
+    GET_RUNTIME_INFO = "get_runtime_info"
+    GET_AGENT_CONFIG = "get_agent_config"
 
 
 # Mapping of tools to their allowed operations
@@ -69,6 +70,43 @@ ALLOWED_OPERATIONS: Dict[ToolName, List[str]] = {
     ToolName.SHELL: [op.value for op in ShellOperation],
     ToolName.SYSTEM: [op.value for op in SystemOperation],
 }
+
+# Operations that require approval (UPDATE/DELETE operations)
+APPROVAL_REQUIRED_OPERATIONS: Dict[str, List[str]] = {
+    "filesystem": ["write_file", "delete_file", "create_file"],
+    "git": ["commit", "push"],
+    "github": ["create_pr"],
+    "shell": ["execute_command"],  # All shell commands require approval
+}
+
+
+def requires_approval(tool: str, operation: str) -> bool:
+    """Check if an operation requires approval.
+
+    Args:
+        tool: Tool name
+        operation: Operation name
+
+    Returns:
+        True if operation requires approval, False otherwise
+    """
+    return operation in APPROVAL_REQUIRED_OPERATIONS.get(tool, [])
+
+
+def get_operations_requiring_approval(plan: "Plan") -> List["PlanStep"]:
+    """Get list of steps that require approval.
+
+    Args:
+        plan: Plan to check
+
+    Returns:
+        List of steps that require approval
+    """
+    steps_requiring_approval = []
+    for step in plan.steps:
+        if requires_approval(step.tool.value, step.operation):
+            steps_requiring_approval.append(step)
+    return steps_requiring_approval
 
 
 class PlanStep(BaseModel):
@@ -152,151 +190,60 @@ class Plan(BaseModel):
 
         return v
 
-    @field_validator("notes")
-    @classmethod
-    def validate_empty_plan_notes(cls, v: Optional[str], info) -> Optional[str]:
-        """Validate that empty plans have explanatory notes."""
-        steps = info.data.get("steps", [])
-        if not steps and not v:
-            raise ValueError(
-                "Empty plans (no steps) must include 'notes' explaining why no action is taken."
-            )
-        return v
-
 
 class PlannerDiagnostics(BaseModel):
-    """Diagnostics information for Planner execution.
+    """Diagnostics information from planning process.
 
-    Captures execution metadata for debugging and auditing.
-    Does NOT affect plan execution - purely informational.
+    Captures raw LLM responses, retry attempts, and validation errors
+    for debugging and observability.
     """
 
     model_name: str = Field(..., description="LLM model name used")
     temperature: float = Field(..., description="Temperature setting used")
-    retries_used: int = Field(..., ge=0, description="Number of retries attempted")
-    raw_llm_response: str = Field(..., description="Raw LLM output (preserved for inspection)")
+    retries_used: int = Field(..., ge=0, description="Number of retries used")
+    raw_llm_response: str = Field(..., description="Raw LLM response text")
     extracted_json: Optional[str] = Field(
-        default=None, description="Extracted JSON string (None if extraction failed)"
+        default=None, description="Extracted JSON from LLM response (if available)"
     )
     validation_errors: Optional[List[str]] = Field(
-        default=None, description="Validation errors encountered (None if validation succeeded)"
+        default=None, description="List of validation errors (if any)"
     )
 
 
 class PlanResult(BaseModel):
-    """Complete planning result including plan and diagnostics.
+    """Complete planning result.
 
-    This is the return type from Planner.plan() - includes both the plan
-    and diagnostic information for auditing and debugging.
+    Contains the validated plan and diagnostics information.
     """
 
-    plan: Plan = Field(..., description="The generated plan (may be empty)")
-    diagnostics: PlannerDiagnostics = Field(..., description="Execution diagnostics")
+    plan: Plan = Field(..., description="Validated execution plan")
+    diagnostics: PlannerDiagnostics = Field(..., description="Planning diagnostics")
 
 
-class PlanningError(Exception):
-    """Base exception for planning failures."""
-
-    pass
-
-
-class LLMCommunicationError(PlanningError):
-    """Raised when LLM communication fails (network, timeout, etc.)."""
-
-    def __init__(self, message: str, diagnostics: Optional[PlannerDiagnostics] = None):
-        """Initialize LLM communication error.
-
-        Args:
-            message: Error message
-            diagnostics: Optional diagnostics information
-        """
-        super().__init__(message)
-        self.diagnostics = diagnostics
-
-
-class JSONExtractionError(PlanningError):
-    """Raised when JSON extraction fails (no JSON found, multiple JSON objects, etc.)."""
-
-    def __init__(self, message: str, raw_response: Optional[str] = None, diagnostics: Optional[PlannerDiagnostics] = None):
-        """Initialize JSON extraction error.
-
-        Args:
-            message: Error message
-            raw_response: Raw LLM response that failed extraction
-            diagnostics: Optional diagnostics information
-        """
-        super().__init__(message)
-        self.raw_response = raw_response
-        self.diagnostics = diagnostics
-
-
-class InvalidPlanError(PlanningError):
-    """Raised when plan validation fails (schema, tool validation, etc.)."""
-
-    def __init__(self, message: str, validation_errors: Optional[List[str]] = None, diagnostics: Optional[PlannerDiagnostics] = None):
-        """Initialize invalid plan error.
-
-        Args:
-            message: Error message
-            validation_errors: List of validation error details
-            diagnostics: Optional diagnostics information
-        """
-        super().__init__(message)
-        self.validation_errors = validation_errors or []
-        self.diagnostics = diagnostics
-
-
-# ============================================================================
-# Execution Control Schemas
-# ============================================================================
-
-
-class ExecutionPolicy(BaseModel):
-    """Execution policy defining retry and rollback behavior.
-
-    This policy controls how the Executor handles failures. It is immutable
-    during execution and does NOT involve any reasoning or intelligence.
-    """
-
-    max_retries_per_step: int = Field(
-        default=0, ge=0, description="Maximum retries per step (0 = no retries)"
-    )
-    retry_delay_seconds: float = Field(
-        default=0.0, ge=0.0, description="Fixed delay between retries in seconds"
-    )
-    rollback_on_failure: bool = Field(
-        default=False, description="Whether to rollback successful steps on failure"
-    )
-
-
-# ============================================================================
-# Execution Result Schemas
-# ============================================================================
+# Execution result schemas
 
 
 class StepExecutionResult(BaseModel):
     """Result of executing a single plan step."""
 
-    step_id: int = Field(..., description="Step identifier from plan")
+    step_id: int = Field(..., description="Step identifier")
     tool: str = Field(..., description="Tool name used")
-    operation: str = Field(..., description="Operation executed")
-    arguments: Dict[str, Any] = Field(default_factory=dict, description="Arguments passed to tool")
-    success: bool = Field(..., description="Whether step executed successfully")
+    operation: str = Field(..., description="Operation performed")
+    arguments: Dict[str, Any] = Field(..., description="Arguments used")
+    success: bool = Field(..., description="Whether step succeeded")
     output: Optional[Any] = Field(default=None, description="Step output (if successful)")
     error: Optional[str] = Field(default=None, description="Error message (if failed)")
-    retries_attempted: int = Field(
-        default=0, ge=0, description="Number of retries attempted for this step"
-    )
+    retries_attempted: int = Field(..., ge=0, description="Number of retries attempted")
     started_at: float = Field(..., description="Unix timestamp when step started")
     finished_at: float = Field(..., description="Unix timestamp when step finished")
 
 
 class RollbackStepResult(BaseModel):
-    """Result of rolling back a single step."""
+    """Result of a rollback step."""
 
     step_id: int = Field(..., description="Step identifier that was rolled back")
     tool: str = Field(..., description="Tool name used for rollback")
-    operation: str = Field(..., description="Operation that was rolled back")
+    operation: str = Field(..., description="Rollback operation performed")
     success: bool = Field(..., description="Whether rollback succeeded")
     error: Optional[str] = Field(default=None, description="Error message (if rollback failed)")
     started_at: float = Field(..., description="Unix timestamp when rollback started")
@@ -304,64 +251,92 @@ class RollbackStepResult(BaseModel):
 
 
 class ExecutionResult(BaseModel):
-    """Complete execution result for a plan.
+    """Complete execution result.
 
-    Always reflects what actually happened during execution, including retries
-    and rollback attempts.
+    Contains results for all executed steps, success status, and rollback information.
     """
 
     plan_id: str = Field(..., description="Plan identifier")
     objective: str = Field(..., description="Plan objective")
-    steps: List[StepExecutionResult] = Field(
-        default_factory=list, description="Results for each executed step"
-    )
-    success: bool = Field(..., description="Whether entire execution succeeded")
+    steps: List[StepExecutionResult] = Field(..., description="Step execution results")
+    success: bool = Field(..., description="Whether execution succeeded")
     stopped_at_step: Optional[int] = Field(
         default=None, description="Step ID where execution stopped (if failed)"
     )
-    rollback_attempted: bool = Field(
-        default=False, description="Whether rollback was attempted"
-    )
+    rollback_attempted: bool = Field(..., description="Whether rollback was attempted")
     rollback_success: Optional[bool] = Field(
-        default=None, description="Whether rollback succeeded (None if not attempted)"
+        default=None, description="Whether rollback succeeded (if attempted)"
     )
     rollback_steps: List[RollbackStepResult] = Field(
-        default_factory=list, description="Results for each rollback step"
+        default_factory=list, description="Rollback step results"
     )
     started_at: float = Field(..., description="Unix timestamp when execution started")
     finished_at: float = Field(..., description="Unix timestamp when execution finished")
 
 
-class ExecutionError(Exception):
-    """Base exception for execution failures."""
+# Error schemas
+
+
+class PlanningError(Exception):
+    """Base exception for planning errors."""
 
     pass
 
 
-class ToolNotFoundError(ExecutionError):
-    """Raised when a requested tool is not found in registry."""
+class LLMCommunicationError(PlanningError):
+    """Raised when LLM communication fails."""
 
-    def __init__(self, tool_name: str):
-        """Initialize tool not found error.
-
-        Args:
-            tool_name: Name of the tool that was not found
-        """
-        super().__init__(f"Tool not found: {tool_name}")
-        self.tool_name = tool_name
+    def __init__(self, message: str, diagnostics: Optional[PlannerDiagnostics] = None):
+        super().__init__(message)
+        self.diagnostics = diagnostics
 
 
-class OperationNotSupportedError(ExecutionError):
-    """Raised when a tool does not support the requested operation."""
+class JSONExtractionError(PlanningError):
+    """Raised when JSON extraction from LLM response fails."""
+
+    def __init__(self, message: str, diagnostics: Optional[PlannerDiagnostics] = None):
+        super().__init__(message)
+        self.diagnostics = diagnostics
+
+
+class InvalidPlanError(PlanningError):
+    """Raised when plan validation fails."""
+
+    def __init__(self, message: str, diagnostics: Optional[PlannerDiagnostics] = None):
+        super().__init__(message)
+        self.diagnostics = diagnostics
+
+
+class OperationNotSupportedError(Exception):
+    """Raised when a tool operation is not supported."""
 
     def __init__(self, tool_name: str, operation: str):
-        """Initialize operation not supported error.
-
-        Args:
-            tool_name: Name of the tool
-            operation: Operation that is not supported
-        """
-        super().__init__(f"Operation '{operation}' not supported by tool '{tool_name}'")
         self.tool_name = tool_name
         self.operation = operation
+        super().__init__(f"Operation '{operation}' is not supported by tool '{tool_name}'")
 
+
+class ToolNotFoundError(Exception):
+    """Raised when a tool is not found in the registry."""
+
+    def __init__(self, tool_name: str):
+        self.tool_name = tool_name
+        super().__init__(f"Tool '{tool_name}' not found in registry")
+
+
+class ExecutionError(Exception):
+    """Base exception for execution errors."""
+
+    pass
+
+
+class ExecutionPolicy(BaseModel):
+    """Execution policy for controlling retries and rollback behavior."""
+
+    max_retries_per_step: int = Field(default=0, ge=0, description="Maximum retries per step")
+    retry_delay_seconds: float = Field(
+        default=0.0, ge=0.0, description="Delay between retries in seconds"
+    )
+    rollback_on_failure: bool = Field(
+        default=False, description="Whether to attempt rollback on failure"
+    )

@@ -1,7 +1,15 @@
 """Storage package."""
 
 from agent.storage.base import NotFoundError, Storage, StorageError
-from agent.storage.models import ApprovalStatus, RunRecord, RunSummary
+from agent.storage.models import (
+    ApprovalStatus,
+    Message,
+    MessageRole,
+    RunRecord,
+    RunSummary,
+    Session,
+    SessionSummary,
+)
 from agent.storage.sqlite import SQLiteStorage
 
 __all__ = [
@@ -12,5 +20,9 @@ __all__ = [
     "RunSummary",
     "ApprovalStatus",
     "SQLiteStorage",
+    "Session",
+    "SessionSummary",
+    "Message",
+    "MessageRole",
 ]
 

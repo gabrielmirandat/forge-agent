@@ -81,9 +81,8 @@ class ToolsConfig(BaseModel):
     system: Dict[str, Any] = Field(
         default_factory=lambda: {
             "enabled": True,
-            "allowed_operations": ["status", "info"],
         },
-        description="System tool configuration",
+        description="System tool configuration for read-only system introspection",
     )
 
 

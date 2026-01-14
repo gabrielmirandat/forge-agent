@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 from prometheus_client import make_asgi_app
 
-from api.routes import approval, execute, health, plan, run, runs
+from api.routes import approval, execute, health, plan, run, runs, session
 
 app = FastAPI(
     title="Forge Agent API",
@@ -18,6 +18,7 @@ app.include_router(execute.router, prefix="/api/v1", tags=["execution"])
 app.include_router(run.router, prefix="/api/v1", tags=["orchestration"])
 app.include_router(runs.router, prefix="/api/v1", tags=["history"])
 app.include_router(approval.router, prefix="/api/v1", tags=["approval"])
+app.include_router(session.router, prefix="/api/v1", tags=["sessions"])
 
 # Prometheus metrics endpoint
 metrics_app = make_asgi_app()

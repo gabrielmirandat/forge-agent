@@ -91,28 +91,41 @@ You have access to the following tools:
 {tools_text}
 {filesystem_constraints}
 
-TOOL PRIORITY RULES (CRITICAL):
-- Prefer structured tools (filesystem, system, git) over execution tools (shell)
-- Use filesystem tool for file I/O (read_file, list_directory, write_file)
-- Use system tool for system introspection (get_info, get_status)
-- Use git tool for Git operations (create_branch, commit, push)
-- Use shell tool ONLY when execution semantics are required (running scripts, programs)
-- NEVER use shell tool for operations that structured tools can handle
+TOOL USAGE RULES (CRITICAL):
+- Filesystem tool: PRIMARY PURPOSE is security boundaries (path validation). Use for SIMPLE file CRUD operations (read_file, write_file, list_directory, create_file, delete_file)
+- System tool: Use for read-only system introspection (get_os_info, get_runtime_info, get_agent_config) - NO side effects
+- Shell tool: Use for ELABORATE operations (text processing with head/tail/grep, complex commands that require execution)
+- Git tool: Use for Git operations (create_branch, commit, push)
+- GitHub tool: Use for GitHub API operations
+- Security: Filesystem tool enforces allowed_paths/restricted_paths - all file operations must respect these boundaries
+- IMPORTANT: filesystem.read_file already returns line count in the 'lines' field - use it directly, don't use wc -l
+- Examples:
+  * Simple read: filesystem.read_file (validates path automatically, returns content, size, and lines)
+  * Count lines: filesystem.read_file (the 'lines' field contains the count - no need for wc -l)
+  * Show first 10 lines: filesystem.read_file + shell.execute_command with "head -n 10"
+  * Filter content: shell.execute_command with "grep pattern"
+  * System info: system.get_os_info or system.get_runtime_info (prefer system tool over shell commands for introspection)
 
 CRITICAL CONSTRAINTS:
 1. You can ONLY use the tools and operations listed above
 2. You MUST NOT invent or hallucinate tools that don't exist
 3. You MUST output ONLY valid JSON - no markdown, no explanations outside JSON
 4. You MUST output EXACTLY ONE JSON object - no multiple JSON objects
-5. If you are unsure about a tool or operation, return an EMPTY PLAN (steps: []) with notes explaining why
-6. Empty plans are valid when no action is needed or the goal cannot be accomplished
+5. If the user's request does NOT require file operations, system commands, git operations, or any tool usage, return an EMPTY PLAN (steps: []) with notes explaining that no tools are needed
+6. Empty plans are valid when:
+   - The request is a simple question that doesn't require tools (e.g., math calculations, general knowledge questions)
+   - No action is needed
+   - The goal cannot be accomplished with available tools
 7. You cannot execute code directly
 8. You cannot access the filesystem directly
 9. You must propose steps, not execute them
-10. For filesystem operations: Use absolute paths or paths relative to allowed directories. The system will expand ~ automatically.
-11. Tool selection priority: filesystem > system > git > shell (use shell only when execution is required)
+10. For file operations: Use shell commands with absolute paths or paths relative to allowed directories. The system will expand ~ automatically.
+11. Filesystem tool is only for path validation - all actual operations use shell commands
+12. IMPORTANT: Simple questions (math, general knowledge, etc.) that don't require tools should return an empty plan
 
-OUTPUT FORMAT (valid JSON only, EXACTLY ONE JSON object):
+OUTPUT FORMAT (CRITICAL - Follow this EXACTLY):
+
+The JSON must have this EXACT structure:
 {{
   "plan_id": "unique-identifier",
   "objective": "clear description of the goal",
@@ -121,44 +134,132 @@ OUTPUT FORMAT (valid JSON only, EXACTLY ONE JSON object):
       "step_id": 1,
       "tool": "filesystem",
       "operation": "read_file",
-      "arguments": {{"path": "src/main.py"}},
-      "rationale": "Read the file to understand its contents"
+      "arguments": {{"path": "/path/to/file"}},
+      "rationale": "Brief explanation of why this step is needed"
     }}
   ],
   "estimated_time_seconds": 60,
   "notes": "optional notes or constraints"
 }}
 
-EXAMPLE - Regular Plan:
+CRITICAL FIELD RULES:
+- "tool" MUST be one of: "filesystem", "system", "git", "github", "shell" (NOT "shell.execute_command" or "security.check_command_allowed")
+- "operation" MUST be a valid operation for that tool (e.g., "read_file", "list_directory", "execute_command")
+- "arguments" MUST be a JSON object with the operation's parameters
+- "rationale" MUST be a string explaining why this step is needed
+- DO NOT use: "description", "input", "condition", "expected_output" - these fields do NOT exist
+
+EXAMPLE 1 - Read a file:
 {{
-  "plan_id": "backup-main-file",
-  "objective": "Create a backup of src/main.py",
+  "plan_id": "read-readme",
+  "objective": "Read the README.md file",
   "steps": [
     {{
       "step_id": 1,
       "tool": "filesystem",
       "operation": "read_file",
-      "arguments": {{"path": "src/main.py"}},
-      "rationale": "Read the source file"
+      "arguments": {{"path": "/home/user/repos/project/README.md"}},
+      "rationale": "Read the README file to show its contents"
+    }}
+  ],
+  "estimated_time_seconds": 5
+}}
+
+EXAMPLE 1b - Count lines in a file:
+{{
+  "plan_id": "count-lines",
+  "objective": "Count the number of lines in README.md",
+  "steps": [
+    {{
+      "step_id": 1,
+      "tool": "filesystem",
+      "operation": "read_file",
+      "arguments": {{"path": "/home/user/repos/project/README.md"}},
+      "rationale": "Read the file - the output includes a 'lines' field with the line count"
+    }}
+  ],
+  "estimated_time_seconds": 5,
+  "notes": "filesystem.read_file automatically returns the line count in the 'lines' field - no need for wc -l"
+}}
+
+EXAMPLE 2 - List directory:
+{{
+  "plan_id": "list-files",
+  "objective": "List all files in the repository",
+  "steps": [
+    {{
+      "step_id": 1,
+      "tool": "filesystem",
+      "operation": "list_directory",
+      "arguments": {{"path": "/home/user/repos/project"}},
+      "rationale": "List all files and directories in the repository root"
+    }}
+  ],
+  "estimated_time_seconds": 5
+}}
+
+EXAMPLE 3 - Get system information:
+{{
+  "plan_id": "get-system-info",
+  "objective": "Get operating system and runtime information",
+  "steps": [
+    {{
+      "step_id": 1,
+      "tool": "system",
+      "operation": "get_os_info",
+      "arguments": {{}},
+      "rationale": "Get OS information (platform, version, etc.)"
     }},
     {{
       "step_id": 2,
-      "tool": "filesystem",
-      "operation": "write_file",
-      "arguments": {{"path": "src/main.py.backup", "content": "{{content_from_step_1}}"}},
-      "rationale": "Write backup file"
+      "tool": "system",
+      "operation": "get_runtime_info",
+      "arguments": {{}},
+      "rationale": "Get Python runtime information"
     }}
   ],
-  "estimated_time_seconds": 10
+  "estimated_time_seconds": 5
 }}
 
-EXAMPLE - Empty Plan (when no action needed):
+EXAMPLE 4 - Execute shell command (ONLY when execution semantics are required):
+{{
+  "plan_id": "run-script",
+  "objective": "Execute a Python script",
+  "steps": [
+    {{
+      "step_id": 1,
+      "tool": "shell",
+      "operation": "execute_command",
+      "arguments": {{"command": "python3 script.py"}},
+      "rationale": "Execute the Python script to run the program"
+    }}
+  ],
+  "estimated_time_seconds": 30
+}}
+
+EXAMPLE 5 - Empty Plan (when no action needed):
 {{
   "plan_id": "no-action-needed",
   "objective": "Check if file exists",
   "steps": [],
   "notes": "The requested file already exists and is up to date. No action required."
 }}
+
+EXAMPLE 6 - Empty Plan (simple question that doesn't require tools):
+{{
+  "plan_id": "simple-question",
+  "objective": "Answer a simple math question",
+  "steps": [],
+  "notes": "This is a simple calculation that doesn't require any tools. The answer can be provided directly without file operations or system commands."
+}}
+
+COMMON MISTAKES TO AVOID:
+❌ WRONG: "tool": "shell.execute_command" → ✅ CORRECT: "tool": "shell", "operation": "execute_command"
+❌ WRONG: "tool": "security.check_command_allowed" → ✅ CORRECT: This tool does not exist, use "shell" with "execute_command"
+❌ WRONG: "description": "..." → ✅ CORRECT: "rationale": "..."
+❌ WRONG: "input": {{...}} → ✅ CORRECT: "arguments": {{...}}
+❌ WRONG: "condition": "..." → ✅ CORRECT: Remove this field, it does not exist
+❌ WRONG: "expected_output": "..." → ✅ CORRECT: Remove this field, it does not exist
 
 Remember: Output EXACTLY ONE valid JSON object. No markdown code blocks, no explanations, no multiple JSON objects."""
 
@@ -264,9 +365,17 @@ Remember: Output EXACTLY ONE valid JSON object. No markdown code blocks, no expl
         try:
             data = json.loads(json_str)
         except json.JSONDecodeError as e:
+            diagnostics = PlannerDiagnostics(
+                model_name=self.model_name,
+                temperature=self.config.llm.temperature,
+                retries_used=0,
+                raw_llm_response="",
+                extracted_json=json_str,
+                validation_errors=[f"JSON error: {str(e)}"]
+            )
             raise InvalidPlanError(
                 f"Invalid JSON format: {e}",
-                validation_errors=[f"JSON error: {str(e)}"]
+                diagnostics=diagnostics
             ) from e
 
         try:
@@ -280,9 +389,17 @@ Remember: Output EXACTLY ONE valid JSON object. No markdown code blocks, no expl
             else:
                 errors = [str(e)]
 
+            diagnostics = PlannerDiagnostics(
+                model_name=self.model_name,
+                temperature=self.config.llm.temperature,
+                retries_used=0,
+                raw_llm_response="",
+                extracted_json=json_str,
+                validation_errors=errors
+            )
             raise InvalidPlanError(
                 f"Plan validation failed: {e}",
-                validation_errors=errors
+                diagnostics=diagnostics
             ) from e
 
     def _generate_plan_id(self, goal: str, context: Optional[Dict[str, Any]] = None) -> str:
@@ -492,7 +609,7 @@ Remember: Output EXACTLY ONE valid JSON object. No markdown code blocks, no expl
                 except InvalidPlanError as e:
                     if attempt == 0 and retry:
                         retries_used += 1
-                        validation_errors = e.validation_errors or [str(e)]
+                        validation_errors = (e.diagnostics.validation_errors if e.diagnostics else None) or [str(e)]
                         # Update prompt with validation errors
                         errors_str = "; ".join(validation_errors[:3])  # Limit to first 3
                         messages[-1]["content"] = (
@@ -502,13 +619,14 @@ Remember: Output EXACTLY ONE valid JSON object. No markdown code blocks, no expl
                         continue  # Retry
                     else:
                         # Create diagnostics before raising
+                        validation_errors = (e.diagnostics.validation_errors if e.diagnostics else None) or [str(e)]
                         diagnostics = PlannerDiagnostics(
                             model_name=self.model_name,
                             temperature=temperature,
                             retries_used=retries_used,
                             raw_llm_response=raw_response,
                             extracted_json=extracted_json,
-                            validation_errors=e.validation_errors or [str(e)],
+                            validation_errors=validation_errors,
                         )
 
                         duration = time.time() - start_time
@@ -523,13 +641,12 @@ Remember: Output EXACTLY ONE valid JSON object. No markdown code blocks, no expl
                             plan_id=plan_id,
                             duration_ms=duration * 1000,
                             retries_used=retries_used,
-                            validation_errors=e.validation_errors or [str(e)],
+                            validation_errors=validation_errors,
                         )
 
                         # Re-raise with diagnostics attached
                         raise InvalidPlanError(
                             str(e),
-                            validation_errors=e.validation_errors,
                             diagnostics=diagnostics
                         ) from e
 

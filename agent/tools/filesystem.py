@@ -1,12 +1,14 @@
-"""Filesystem operations tool.
+"""Filesystem operations tool with security boundaries.
 
 CONTRACT:
-- Purpose: Structured file and directory operations with explicit path validation
-- Allowed: Read/write files, list directories, create/delete files
-- Forbidden: Execution semantics, system introspection, network I/O
-- Security: Path validation is mandatory, no silent failures, no symlink escapes
+- PRIMARY PURPOSE: Security boundaries and path validation for file operations
+- Simple CRUD operations: read, write, list, create, delete files and directories
+- Security: Path validation is MANDATORY - enforces allowed_paths and restricted_paths
+- For elaborate operations: Use shell commands (head, tail, grep, sed, awk, etc.) for text processing
 
-See docs/tools/filesystem.md for full contract documentation.
+The filesystem tool enforces security boundaries through path validation. It provides
+simple file CRUD operations. For elaborate text processing, filtering, or complex
+operations, use shell commands instead.
 """
 
 import os
@@ -18,15 +20,28 @@ from agent.tools.base import Tool, ToolResult
 
 
 class FilesystemTool(Tool):
-    """Tool for filesystem operations.
+    """Tool for filesystem operations with security boundaries.
+    
+    PRIMARY PURPOSE: Security boundaries and path validation.
+    
+    This tool enforces security through mandatory path validation against
+    allowed_paths and restricted_paths. It provides simple file operations:
+    - read_file: Read file contents
+    - write_file: Write content to a file
+    - list_directory: List files and directories
+    - create_file: Create a new file
+    - delete_file: Delete a file
+    
+    For elaborate operations (text processing, filtering, extraction):
+    - Use shell commands: head, tail, grep, sed, awk, cut, sort, etc.
+    - Example: To show first 10 lines, use shell.execute_command with "head -n 10"
     
     CONTRACT ENFORCEMENT:
-    - Path validation is mandatory for all operations
-    - No execution semantics (use shell tool for commands)
-    - No system introspection (use system tool for system info)
-    - All mutations are explicit and traceable
-    
-    See docs/tools/filesystem.md for full contract.
+    - SECURITY: Path validation is MANDATORY for all operations
+    - Validates paths against allowed_paths and restricted_paths
+    - No operation can bypass path validation
+    - Simple operations: use filesystem tool
+    - Elaborate operations: use shell tool
     """
 
     @property
@@ -171,8 +186,51 @@ class FilesystemTool(Tool):
 
     async def _read(self, path: Path) -> ToolResult:
         """Read file contents."""
-        # TODO: Implement file reading
-        raise NotImplementedError("File reading not yet implemented")
+        try:
+            if not path.exists():
+                return ToolResult(
+                    success=False, output=None, error=f"Path does not exist: {path}"
+                )
+            if not path.is_file():
+                return ToolResult(
+                    success=False, output=None, error=f"Path is not a file: {path}"
+                )
+            
+            # Read file content
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+            except UnicodeDecodeError:
+                # Try binary mode for non-text files
+                with open(path, "rb") as f:
+                    content = f.read()
+                    # For binary files, return a message instead of raw bytes
+                    return ToolResult(
+                        success=False,
+                        output=None,
+                        error=f"File appears to be binary (not text): {path}",
+                    )
+            except PermissionError as e:
+                return ToolResult(
+                    success=False, output=None, error=f"Permission denied: {e}"
+                )
+            
+            # Get file size
+            file_size = path.stat().st_size
+            
+            return ToolResult(
+                success=True,
+                output={
+                    "path": str(path),
+                    "content": content,
+                    "size": file_size,
+                    "lines": len(content.splitlines()) if content else 0,
+                },
+            )
+        except PermissionError as e:
+            return ToolResult(success=False, output=None, error=f"Permission denied: {e}")
+        except Exception as e:
+            return ToolResult(success=False, output=None, error=f"Failed to read file: {e}")
 
     async def _write(self, path: Path, content: str) -> ToolResult:
         """Write file contents."""

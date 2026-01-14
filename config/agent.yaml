@@ -33,11 +33,11 @@ agent:
   # See docs/tools/*.md for full contract documentation.
   tools:
     # FILESYSTEM TOOL
-    # Purpose: Structured file and directory operations with explicit path validation
-    # Contract: Read/write files, list directories, create/delete files
-    # Forbidden: Execution semantics, system introspection, network I/O
-    # Security: Path validation is mandatory, allowed_paths take priority over restricted_paths
-    # Overlap: Prefer filesystem for file I/O, use shell only when execution is required
+    # PRIMARY PURPOSE: Security boundaries and path validation for file operations
+    # Simple CRUD operations: read, write, list, create, delete files and directories
+    # Security: Path validation is MANDATORY - enforces allowed_paths and restricted_paths
+    # For elaborate operations: Use shell commands (head, tail, grep, sed, awk, etc.) for text processing
+    # Rule: Simple operations = filesystem tool, Elaborate operations = shell tool
     filesystem:
       enabled: true
       # Allowed paths: Explicitly allowed directories (subdirectories are also allowed)
@@ -82,6 +82,17 @@ agent:
       pr_title_template: "Agent: {title}"
       pr_body_template: "Automated changes by forge-agent"
     
+    # SYSTEM TOOL
+    # Purpose: Read-only system introspection and information retrieval
+    # Contract: Get OS info, runtime info, agent config summary
+    # Forbidden: Any operations that modify system state
+    # Security: No side effects, read-only operations only
+    # Overlap:
+    #   - vs shell: Prefer system for introspection, use shell only when you need to run a command
+    #   - vs filesystem: System tool is for system-level info, filesystem is for file operations
+    system:
+      enabled: true
+    
     # SHELL TOOL
     # Purpose: Command execution with explicit execution semantics
     # Contract: Execute commands, run programs, capture output
@@ -98,6 +109,16 @@ agent:
       # Only add commands that require execution semantics
       allowed_commands:
         - ls  # Note: Prefer filesystem.list_directory when possible
+        - head
+        - tail
+        - grep
+        - cat
+        - wc
+        - sed
+        - awk
+        - cut
+        - sort
+        - uniq
         - git
         - npm
         - python
@@ -117,22 +138,6 @@ agent:
         - mount
         - umount
     
-    # SYSTEM TOOL
-    # Purpose: Side-effect-free system introspection
-    # Contract: Query platform info, Python version, system status
-    # Forbidden: Execution semantics, file operations, state mutation
-    # Security: All operations MUST be read-only and side-effect-free
-    # Overlap:
-    #   - vs shell: Prefer system for introspection, use shell only when you need to run a command
-    #   - vs filesystem: Prefer system for system metadata, use filesystem for file contents
-    # Priority: System should be preferred for introspection over shell commands
-    system:
-      enabled: true
-      # Allowed operations: Side-effect-free introspection operations only
-      # No execution, no file I/O, no state mutation
-      allowed_operations:
-        - get_status  # Get system operational status
-        - get_info    # Get platform information (OS, Python version, architecture)
   
   # Logging
   logging:

@@ -16,3 +16,30 @@ code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
     monospace;
 }
+
+/* Custom scrollbar styles */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: #2a2b2f;
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #565869;
+  border-radius: 5px;
+  border: 2px solid #2a2b2f;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #6e6f7f;
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #565869 #2a2b2f;
+}
