@@ -21,8 +21,10 @@ A self-hosted, local-first autonomous code agent, inspired by Claude Code, but r
 
 - Python 3.12+
 - `python3-venv` package (for virtual environment)
-- Docker and Docker Compose (for LLM inference with Ollama)
-- NVIDIA GPU with 12GB+ VRAM (recommended for local LLM)
+- LLM Provider (choose one):
+  - **Ollama**: Docker and Docker Compose (recommended for easy setup)
+  - **AirLLM**: PyTorch and CUDA (for running large models on small GPUs)
+- NVIDIA GPU with 4GB+ VRAM (for AirLLM) or 12GB+ VRAM (for Ollama with large models)
 
 ### Install python3-venv (Ubuntu/Debian)
 
@@ -42,6 +44,8 @@ source .venv/bin/activate
 
 ### Start Services
 
+#### Option 1: Using Ollama (Recommended for Easy Setup)
+
 ```bash
 # Start Ollama (for LLM inference)
 cd decisions/model-selection
@@ -49,6 +53,31 @@ docker-compose up -d ollama
 
 # Pull the selected model
 docker exec phase1-ollama ollama pull qwen2.5-coder:7b
+```
+
+#### Option 2: Using AirLLM (For Large Models on Small GPUs)
+
+AirLLM allows running models up to 70B on GPUs with as little as 4GB VRAM using layer-wise loading and optional compression.
+
+```bash
+# Install AirLLM dependencies (if not already installed)
+pip install airllm torch transformers bitsandbytes
+
+# Configure agent.yaml to use AirLLM
+# See config/agent.airllm.example.yaml for configuration options
+cp config/agent.airllm.example.yaml config/agent.yaml
+
+# Edit config/agent.yaml and set:
+#   provider: airllm
+#   model: Qwen/Qwen-7B  # or any HuggingFace model
+#   compression: 4bit    # Optional: speeds up inference 3x
+```
+
+**AirLLM Benefits:**
+- Run 70B models on 4GB GPUs
+- 3x speedup with 4bit/8bit compression (minimal accuracy loss)
+- Supports many models: Qwen, ChatGLM, Baichuan, Mistral, Llama, etc.
+- No API server needed - direct Python integration
 
 # Start backend API
 cd ../..
@@ -130,6 +159,27 @@ pip install --upgrade pip
 # Install dependencies
 pip install -r requirements.txt
 ```
+
+### Environment Variables
+
+The project uses environment variables for sensitive configuration. Create a `.env` file in the project root:
+
+```bash
+# Copy the example file
+cp .env.example .env
+
+# Edit .env and add your GitHub token
+# GITHUB_TOKEN=your_github_token_here
+```
+
+**Getting a GitHub Token**:
+1. Go to https://github.com/settings/tokens
+2. Click "Generate new token" → "Generate new token (classic)"
+3. Select scopes:
+   - `repo` (for private repos) or `public_repo` (for public repos only)
+4. Copy the token and add it to your `.env` file
+
+The `.env` file is gitignored and will not be committed to the repository.
 
 ### Verify Installation
 

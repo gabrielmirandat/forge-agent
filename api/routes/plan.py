@@ -53,7 +53,7 @@ async def plan(
     log_event(logger, "api.request.started", endpoint="/plan", method="POST")
 
     try:
-        with trace_span("plan", attributes={"goal": request.goal[:100]}):
+        with trace_span("plan", attributes={"goal": request.goal[:500]}):  # Increased from 100 to 500 chars
             # Direct passthrough to Planner.plan()
             plan_result = await planner.plan(request.goal, request.context)
 

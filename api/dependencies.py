@@ -8,6 +8,8 @@ from functools import lru_cache
 from fastapi import Depends
 
 from agent.config.loader import AgentConfig, ConfigLoader
+from agent.llm.airllm import AirLLMProvider
+from agent.llm.base import LLMProvider
 from agent.llm.ollama import OllamaProvider
 from agent.runtime.executor import Executor
 from agent.runtime.planner import Planner
@@ -36,24 +38,49 @@ def get_config() -> AgentConfig:
     return _config_cache
 
 
-def get_llm_provider(config: AgentConfig = Depends(get_config)) -> OllamaProvider:
+def get_llm_provider(config: AgentConfig = Depends(get_config)) -> LLMProvider:
     """Get LLM provider (singleton).
 
     Args:
         config: Agent configuration (injected)
 
     Returns:
-        OllamaProvider instance
+        LLMProvider instance (OllamaProvider, AirLLMProvider, or LocalAIProvider)
     """
-    # Convert LLMConfig to dict format expected by OllamaProvider
+    provider_name = config.llm.provider.lower()
+    
+    # Convert LLMConfig to dict format expected by providers
     llm_config_dict = {
-        "base_url": config.llm.base_url,
         "model": config.llm.model,
         "temperature": config.llm.temperature,
         "max_tokens": config.llm.max_tokens,
         "timeout": config.llm.timeout,
     }
-    return OllamaProvider(llm_config_dict)
+    
+    # Add provider-specific config
+    if provider_name == "ollama":
+        llm_config_dict["base_url"] = config.llm.base_url
+        return OllamaProvider(llm_config_dict)
+    elif provider_name == "airllm":
+        # AirLLM-specific config (from config.llm dict if present)
+        llm_config_raw = config.llm.model_dump()
+        if "compression" in llm_config_raw:
+            llm_config_dict["compression"] = llm_config_raw["compression"]
+        if "hf_token" in llm_config_raw:
+            llm_config_dict["hf_token"] = llm_config_raw["hf_token"]
+        if "profiling_mode" in llm_config_raw:
+            llm_config_dict["profiling_mode"] = llm_config_raw["profiling_mode"]
+        if "layer_shards_saving_path" in llm_config_raw:
+            llm_config_dict["layer_shards_saving_path"] = llm_config_raw["layer_shards_saving_path"]
+        if "delete_original" in llm_config_raw:
+            llm_config_dict["delete_original"] = llm_config_raw["delete_original"]
+        return AirLLMProvider(llm_config_dict)
+    elif provider_name == "localai":
+        llm_config_dict["base_url"] = config.llm.base_url
+        from agent.llm.localai import LocalAIProvider
+        return LocalAIProvider(llm_config_dict)
+    else:
+        raise ValueError(f"Unknown LLM provider: {provider_name}. Supported: ollama, airllm, localai")
 
 
 def get_tool_registry(config: AgentConfig = Depends(get_config)) -> ToolRegistry:
@@ -74,10 +101,17 @@ def get_tool_registry(config: AgentConfig = Depends(get_config)) -> ToolRegistry
     # Register all tools with their security configurations
     # Merge workspace config with tool-specific config
     filesystem_config = {**workspace_config, **tools_config.get("filesystem", {})}
-    git_config = {**workspace_config, **tools_config.get("git", {})}
+    # Git tool needs access to filesystem allowed_paths for path validation
+    git_config = {
+        **workspace_config,
+        **tools_config.get("git", {}),
+        "allowed_paths": filesystem_config.get("allowed_paths", []),
+        "restricted_paths": filesystem_config.get("restricted_paths", []),
+    }
     github_config = {**workspace_config, **tools_config.get("github", {})}
     shell_config = {**workspace_config, **tools_config.get("shell", {})}
-    system_config = {**workspace_config, **tools_config.get("system", {})}
+    # System tool needs access to full agent config for status info
+    system_config = {**workspace_config, **tools_config.get("system", {}), "_agent_config": config}
 
     registry.register(FilesystemTool(filesystem_config))
     registry.register(GitTool(git_config))
@@ -90,7 +124,7 @@ def get_tool_registry(config: AgentConfig = Depends(get_config)) -> ToolRegistry
 
 def get_planner(
     config: AgentConfig = Depends(get_config),
-    llm_provider: OllamaProvider = Depends(get_llm_provider),
+    llm_provider: LLMProvider = Depends(get_llm_provider),
 ) -> Planner:
     """Get planner instance.
 

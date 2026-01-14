@@ -23,6 +23,7 @@ from agent.runtime.schema import (
     LLMCommunicationError,
     PlanningError,
     get_operations_requiring_approval,
+    get_restricted_steps,
 )
 from agent.storage import MessageRole, NotFoundError, Storage, StorageError
 from api.dependencies import get_config, get_executor, get_llm_provider, get_planner, get_storage, get_tool_registry
@@ -47,6 +48,7 @@ async def _generate_final_response(
     user_message: str,
     execution_result,
     config,
+    session_id: str | None = None,
 ) -> str:
     """Generate final response from LLM based on execution results.
     
@@ -77,6 +79,7 @@ If the question is simple (math, general knowledge, etc.), provide a direct answ
                 messages,
                 temperature=config.llm.temperature,
                 max_tokens=config.llm.max_tokens,
+                session_id=session_id,  # Track usage for this session
             )
             return response.strip()
         except Exception as e:
@@ -105,7 +108,8 @@ If the question is simple (math, general knowledge, etc.), provide a direct answ
                 output_dict = step.output.copy()
                 
                 # Always preserve metadata fields (lines, size, path, etc.)
-                metadata_fields = ["lines", "size", "path", "return_code", "command"]
+                # entries is critical for list_directory operations - it contains the actual list of files/directories
+                metadata_fields = ["lines", "size", "path", "return_code", "command", "entries"]
                 preserved_metadata = {k: v for k, v in output_dict.items() if k in metadata_fields}
                 
                 # Truncate content if present
@@ -130,15 +134,22 @@ You will receive:
 1. The user's original request
 2. The execution results (success/failure, outputs, errors)
 
+CRITICAL INSTRUCTIONS:
+- You MUST use the actual data from the execution results in your response
+- If the user asked to list repositories/directories/files, you MUST show the actual list from the execution results
+- If the user asked to read a file, you MUST show the actual file content from the execution results
+- If the user asked for information, you MUST extract and present that information from the execution results
+- DO NOT say "I don't have information" if the execution results contain the requested data
+- DO NOT generate generic responses - always use the actual outputs from the execution results
+
 Your task is to:
-- Provide a clear, natural language response to the user
-- If the execution result has no steps (empty plan), answer the user's question directly without mentioning tools or execution
-- Show the relevant information from the execution results when tools were used
+- Extract the relevant information from the execution results
+- Present it clearly to the user in natural language
 - Format outputs nicely (use code blocks for code, lists for directories, etc.)
 - If there were errors, explain them clearly
 - Be concise but informative
 
-IMPORTANT: If the execution result has an empty plan (no steps), this means the user's question doesn't require tools. Answer the question directly as a helpful assistant would, without mentioning tools or execution results.
+IMPORTANT: The execution results contain the actual data requested by the user. Your job is to extract and present that data, not to say you don't have it.
 
 Format your response as plain text with markdown-style formatting (code blocks, lists, etc.)."""
 
@@ -147,7 +158,16 @@ Format your response as plain text with markdown-style formatting (code blocks, 
 Execution results:
 {json.dumps(execution_summary, indent=2)}
 
-Please provide a clear, user-friendly response based on these execution results."""
+CRITICAL: The execution results above contain the actual data requested by the user. You MUST extract and present this data in your response.
+
+For example:
+- If the user asked "quais repositorios temos hoje?" and the execution results show a list_directory output with items, you MUST list those items
+- If the user asked to read a file and the execution results show file content, you MUST show that content
+- If the user asked for information and the execution results contain that information, you MUST present it
+
+Do NOT say you don't have the information if it's in the execution results. Extract and present the actual data.
+
+Please provide a clear, user-friendly response using the actual data from the execution results above."""
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -160,6 +180,7 @@ Please provide a clear, user-friendly response based on these execution results.
             messages,
             temperature=config.llm.temperature,
             max_tokens=config.llm.max_tokens,
+            session_id=session_id,
         )
         return response.strip()
     except Exception as e:
@@ -660,10 +681,11 @@ async def send_message(
         assistant_content = ""
         hitl_enabled = False
         steps_requiring_approval = []
+        restricted_steps = []
 
         try:
             with trace_span("plan", attributes={"session_id": session_id}):
-                plan_result_obj = await planner.plan(request.content, context)
+                plan_result_obj = await planner.plan(request.content, context, session_id=session_id)
 
             plan_result = {
                 "plan": plan_result_obj.plan.model_dump(),
@@ -681,12 +703,16 @@ async def send_message(
                 # Empty plan means no tools are needed - answer directly
                 # Use LLM to generate response based on user's question
                 assistant_content = await _generate_final_response(
-                    llm_provider, request.content, None, config
+                    llm_provider, request.content, None, config, session_id=session_id
                 )
             else:
                 # Step 6: Check if HITL is enabled and if plan has operations requiring approval
                 hitl_enabled = config.human_in_the_loop.enabled
                 steps_requiring_approval = get_operations_requiring_approval(plan_result_obj.plan)
+                
+                # Detect restricted commands (even if HITL is disabled, we still want to mark them)
+                restricted_commands = set(config.tools.shell.get("restricted_commands", []))
+                restricted_steps = get_restricted_steps(plan_result_obj.plan, restricted_commands)
 
                 if hitl_enabled and steps_requiring_approval:
                     # HITL enabled and plan has operations requiring approval
@@ -727,7 +753,7 @@ async def send_message(
                         from agent.runtime.schema import ExecutionResult
                         execution_result_for_llm = ExecutionResult(**execution_result)
                         assistant_content = await _generate_final_response(
-                            llm_provider, request.content, execution_result_for_llm, config
+                            llm_provider, request.content, execution_result_for_llm, config, session_id=session_id
                         )
                         
                         if steps_requiring_approval:
@@ -762,7 +788,7 @@ async def send_message(
                     from agent.runtime.schema import ExecutionResult
                     execution_result_for_llm = ExecutionResult(**execution_result)
                     assistant_content = await _generate_final_response(
-                        llm_provider, request.content, execution_result_for_llm, config
+                        llm_provider, request.content, execution_result_for_llm, config, session_id=session_id
                     )
                 else:
                     # HITL disabled - execute everything
@@ -784,7 +810,7 @@ async def send_message(
                     from agent.runtime.schema import ExecutionResult
                     execution_result_for_llm = ExecutionResult(**execution_result)
                     assistant_content = await _generate_final_response(
-                        llm_provider, request.content, execution_result_for_llm, config
+                        llm_provider, request.content, execution_result_for_llm, config, session_id=session_id
                     )
 
         except InvalidPlanError as e:
@@ -839,6 +865,9 @@ async def send_message(
         pending_steps = None
         if hitl_enabled and steps_requiring_approval:
             pending_steps = [step.step_id for step in steps_requiring_approval]
+        
+        # Include restricted steps (always include, even if HITL is disabled)
+        restricted_step_ids = [step.step_id for step in restricted_steps] if restricted_steps else None
 
         return MessageResponse(
             message_id=assistant_message.message_id,
@@ -848,6 +877,7 @@ async def send_message(
             plan_result=assistant_message.plan_result,
             execution_result=assistant_message.execution_result,
             pending_approval_steps=pending_steps,
+            restricted_steps=restricted_step_ids,
         )
 
     except NotFoundError as e:
@@ -987,7 +1017,7 @@ async def approve_operations(
                 break
         
         output_content = await _generate_final_response(
-            llm_provider, user_message, execution_result_obj, config
+            llm_provider, user_message, execution_result_obj, config, session_id=session_id
         )
         
         # Save execution result to message

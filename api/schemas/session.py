@@ -45,6 +45,9 @@ class MessageResponse(BaseModel):
     pending_approval_steps: Optional[List[int]] = Field(
         default=None, description="List of step IDs that require approval (if any)"
     )
+    restricted_steps: Optional[List[int]] = Field(
+        default=None, description="List of step IDs that use restricted commands (if any)"
+    )
 
 
 class SessionResponse(BaseModel):

@@ -49,14 +49,14 @@ stop:
 
 pull-models:
 	@echo "Pulling evaluation models..."
-	docker exec phase1-ollama ollama pull llama3.1:8b-instruct
-	docker exec phase1-ollama ollama pull qwen2.5-coder:7b
-	docker exec phase1-ollama ollama pull deepseek-coder:6.7b
+	docker exec ollama ollama pull llama3.1:8b-instruct
+	docker exec ollama ollama pull qwen2.5-coder:7b
+	docker exec ollama ollama pull deepseek-coder:6.7b
 	@echo "Done. Available models:"
-	@docker exec phase1-ollama ollama list
+	@docker exec ollama ollama list
 
 list-models:
-	docker exec phase1-ollama ollama list
+	docker exec ollama ollama list
 
 build-eval:
 	docker-compose --profile evaluator build evaluator
@@ -67,14 +67,14 @@ test:
 		echo "Usage: make test MODEL=llama3.1:8b-instruct TEST=1"; \
 		exit 1; \
 	fi
-	docker exec phase1-evaluator python evaluate_model.py --model $(MODEL) --test $(TEST)
+	docker exec evaluator python evaluate_model.py --model $(MODEL) --test $(TEST)
 
 test-all:
 	@if [ -z "$(MODEL)" ]; then \
 		echo "Usage: make test-all MODEL=llama3.1:8b-instruct"; \
 		exit 1; \
 	fi
-	docker exec phase1-evaluator python evaluate_model.py --model $(MODEL) --all
+	docker exec evaluator python evaluate_model.py --model $(MODEL) --all
 
 validate:
 	@if [ -z "$(MODEL)" ]; then \
@@ -82,9 +82,9 @@ validate:
 		exit 1; \
 	fi
 	@if [ -z "$(TEST)" ]; then \
-		docker exec phase1-evaluator python validate_output.py results/$(MODEL)/ --all; \
+		docker exec evaluator python validate_output.py results/$(MODEL)/ --all; \
 	else \
-		docker exec phase1-evaluator python validate_output.py results/$(MODEL)/ --test $(TEST); \
+		docker exec evaluator python validate_output.py results/$(MODEL)/ --test $(TEST); \
 	fi
 
 logs:

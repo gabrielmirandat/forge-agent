@@ -83,6 +83,7 @@ import {
   rejectOperations,
   sendMessage,
 } from '../api/client';
+import { ObservabilityPanel } from '../components/ObservabilityPanel';
 import type {
   MessageResponse,
   SessionResponse,
@@ -97,13 +98,12 @@ export function ChatPage() {
   const [sending, setSending] = useState(false);
   const [approving, setApproving] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
-  const [hoveredSession, setHoveredSession] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
-  const shouldAutoScrollRef = useRef(true);
+  const shouldAutoScrollRef = useRef(false); // Start with auto-scroll disabled
 
   // Load sessions list
   const loadSessions = async () => {
@@ -133,20 +133,7 @@ export function ChatPage() {
         }
       }, 0);
       
-      // If we should auto-scroll, scroll to bottom after loading
-      if (shouldAutoScrollRef.current) {
-        // Use double requestAnimationFrame to ensure DOM is fully updated
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            if (messagesContainerRef.current) {
-              messagesContainerRef.current.scrollTo({
-                top: messagesContainerRef.current.scrollHeight,
-                behavior: 'smooth'
-              });
-            }
-          });
-        });
-      }
+      // Don't auto-scroll when loading a session - preserve user's scroll position
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load session');
     } finally {
@@ -190,7 +177,7 @@ export function ChatPage() {
       execution_result: null,
     };
 
-    // Always scroll to bottom when user sends a message
+    // When user sends a message, enable auto-scroll and scroll to bottom
     shouldAutoScrollRef.current = true;
     
     // Scroll to bottom immediately after adding user message
@@ -211,9 +198,8 @@ export function ChatPage() {
 
     try {
       await sendMessage(currentSession.session_id, messageContent);
-      // Reload session to get updated messages
-      // Keep auto-scroll enabled so we follow the LLM response
-      shouldAutoScrollRef.current = true;
+      // When agent responds, disable auto-scroll so user can manually scroll
+      shouldAutoScrollRef.current = false;
       await loadSession(currentSession.session_id);
       await loadSessions(); // Refresh list to update titles
     } catch (err) {
@@ -228,69 +214,23 @@ export function ChatPage() {
     }
   };
 
-  // Scroll to bottom smoothly when messages change
-  useEffect(() => {
-    if (!messagesContainerRef.current || !messagesEndRef.current) return;
-    
-    const container = messagesContainerRef.current;
-    const isNearBottom = 
-      container.scrollHeight - container.scrollTop - container.clientHeight < 150;
-    
-    // Always scroll to bottom when new messages arrive if user is near bottom
-    // This ensures smooth scrolling as LLM response appears
-    if (shouldAutoScrollRef.current || isNearBottom) {
-      // Use requestAnimationFrame for smooth scrolling that follows content
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          if (messagesContainerRef.current) {
-            // Scroll directly to bottom of container for smoother experience
-            const targetScroll = messagesContainerRef.current.scrollHeight;
-            messagesContainerRef.current.scrollTo({
-              top: targetScroll,
-              behavior: 'smooth'
-            });
-          }
-          shouldAutoScrollRef.current = true;
-        });
-      });
-    }
-  }, [currentSession?.messages]);
-
-  // Continuously scroll to bottom while content is being added (for streaming responses)
+  // Scroll to bottom smoothly when messages change - ONLY if auto-scroll is enabled
+  // This happens when user sends a message, but NOT when agent responds
   useEffect(() => {
     if (!messagesContainerRef.current) return;
-
-    const container = messagesContainerRef.current;
-    let lastHeight = container.scrollHeight;
-    let scrollInterval: number | null = null;
-
-    // Check if content height is changing (new content being added)
-    const checkAndScroll = () => {
-      // Only scroll if auto-scroll is enabled
-      if (!shouldAutoScrollRef.current) return;
-      
-      const currentHeight = container.scrollHeight;
-      if (currentHeight !== lastHeight) {
-        // Content changed, scroll to bottom smoothly
-        container.scrollTo({
-          top: currentHeight,
-          behavior: 'smooth'
-        });
-        lastHeight = currentHeight;
-      }
-    };
-
-    // Poll for content changes (useful for streaming responses)
-    // Only start polling if we should auto-scroll
+    
+    // Only scroll if auto-scroll is explicitly enabled (user just sent a message)
     if (shouldAutoScrollRef.current) {
-      scrollInterval = window.setInterval(checkAndScroll, 100);
+      requestAnimationFrame(() => {
+        if (messagesContainerRef.current) {
+          messagesContainerRef.current.scrollTo({
+            top: messagesContainerRef.current.scrollHeight,
+            behavior: 'smooth'
+          });
+        }
+      });
     }
-
-    return () => {
-      if (scrollInterval !== null) {
-        clearInterval(scrollInterval);
-      }
-    };
+    // When agent responds, auto-scroll is disabled, so scroll position stays where user left it
   }, [currentSession?.messages]);
 
   // Track scroll position to determine if we should auto-scroll
@@ -450,8 +390,6 @@ export function ChatPage() {
           {sessions.map((session) => (
             <div
               key={session.session_id}
-              onMouseEnter={() => setHoveredSession(session.session_id)}
-              onMouseLeave={() => setHoveredSession(null)}
               onClick={() => {
                 window.history.pushState({}, '', `/chat/${session.session_id}`);
                 loadSession(session.session_id);
@@ -470,6 +408,20 @@ export function ChatPage() {
                 justifyContent: 'space-between',
                 gap: '0.5rem',
               }}
+              onMouseEnter={(e) => {
+                // Make text bold on hover
+                const span = e.currentTarget.querySelector('span');
+                if (span) {
+                  span.style.fontWeight = '600';
+                }
+              }}
+              onMouseLeave={(e) => {
+                // Remove bold on leave
+                const span = e.currentTarget.querySelector('span');
+                if (span) {
+                  span.style.fontWeight = 'normal';
+                }
+              }}
             >
               <span
                 style={{
@@ -477,29 +429,39 @@ export function ChatPage() {
                   textOverflow: 'ellipsis',
                   whiteSpace: 'nowrap',
                   flex: 1,
+                  fontWeight: 'normal',
                 }}
               >
                 {session.title}
               </span>
-              {hoveredSession === session.session_id && (
-                <button
-                  onClick={(e) => handleDeleteSession(session.session_id, e)}
-                  disabled={deleting === session.session_id}
-                  style={{
-                    padding: '0.25rem 0.5rem',
-                    background: deleting === session.session_id ? '#444' : '#dc3545',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: deleting === session.session_id ? 'not-allowed' : 'pointer',
-                    fontSize: '0.75rem',
-                    flexShrink: 0,
-                  }}
-                  title="Delete session"
-                >
-                  {deleting === session.session_id ? '...' : '✕'}
-                </button>
-              )}
+              <button
+                onClick={(e) => handleDeleteSession(session.session_id, e)}
+                disabled={deleting === session.session_id}
+                style={{
+                  padding: '0',
+                  background: 'transparent',
+                  color: '#888',
+                  border: 'none',
+                  cursor: deleting === session.session_id ? 'not-allowed' : 'pointer',
+                  fontSize: '1rem',
+                  flexShrink: 0,
+                  width: '20px',
+                  height: '20px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  opacity: deleting === session.session_id ? 0.5 : 1,
+                }}
+                title="Delete session"
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.color = '#fff';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.color = '#888';
+                }}
+              >
+                {deleting === session.session_id ? '...' : '✕'}
+              </button>
             </div>
           ))}
         </div>
@@ -510,11 +472,20 @@ export function ChatPage() {
         style={{
           flex: 1,
           display: 'flex',
-          flexDirection: 'column',
+          flexDirection: 'row',
           background: '#343541',
           color: '#fff',
         }}
       >
+        {/* Chat content */}
+        <div
+          style={{
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            minWidth: 0,
+          }}
+        >
         {error && (
           <div
             style={{
@@ -630,20 +601,24 @@ export function ChatPage() {
                           <div style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
                             {message.plan_result.plan.steps.map((step) => {
                               const requiresApproval = message.pending_approval_steps?.includes(step.step_id);
+                              const isRestricted = message.restricted_steps?.includes(step.step_id);
                               return (
                                 <div
                                   key={step.step_id}
                                   style={{
                                     padding: '0.5rem',
-                                    background: requiresApproval ? '#7a1a1a' : '#2a2b2f',
+                                    background: isRestricted ? '#4a1a1a' : requiresApproval ? '#7a1a1a' : '#2a2b2f',
                                     borderRadius: '4px',
-                                    border: requiresApproval ? '1px solid #ff4444' : '1px solid transparent',
+                                    border: isRestricted ? '2px solid #ff0000' : requiresApproval ? '1px solid #ff4444' : '1px solid transparent',
                                   }}
                                 >
                                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                     <div>
                                       <strong>Step {step.step_id}:</strong> {step.tool}.{step.operation}
-                                      {requiresApproval && (
+                                      {isRestricted && (
+                                        <span style={{ marginLeft: '0.5rem', color: '#ff6666', fontWeight: 'bold' }}>🚫 RESTRICTED COMMAND</span>
+                                      )}
+                                      {requiresApproval && !isRestricted && (
                                         <span style={{ marginLeft: '0.5rem', color: '#ff8888' }}>⚠️ Requires Approval</span>
                                       )}
                                     </div>
@@ -651,6 +626,11 @@ export function ChatPage() {
                                   <div style={{ marginTop: '0.25rem', fontSize: '0.8rem', color: '#aaa' }}>
                                     {step.rationale}
                                   </div>
+                                  {isRestricted && (
+                                    <div style={{ marginTop: '0.5rem', padding: '0.5rem', background: '#2a0000', borderRadius: '4px', fontSize: '0.8rem', color: '#ffaaaa' }}>
+                                      ⚠️ <strong>WARNING:</strong> This command is restricted and may have dangerous side effects. Are you sure you want to proceed?
+                                    </div>
+                                  )}
                                 </div>
                               );
                             })}
@@ -756,6 +736,10 @@ export function ChatPage() {
             </div>
           </>
         )}
+        </div>
+
+        {/* Observability panel */}
+        <ObservabilityPanel />
       </div>
     </div>
   );

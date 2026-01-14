@@ -50,7 +50,12 @@ class GitHubTool(Tool):
 
         try:
             # Map operation names from schema to internal methods
-            if operation == "create_pr":
+            if operation == "create_repository":
+                name = arguments.get("name", "")
+                description = arguments.get("description", "")
+                private = arguments.get("private", False)
+                return await self._create_repository(name, description, private)
+            elif operation == "create_pr":
                 repo = arguments.get("repo", "")
                 title = arguments.get("title", "")
                 body = arguments.get("body", "")
@@ -73,6 +78,69 @@ class GitHubTool(Tool):
             raise
         except Exception as e:
             return ToolResult(success=False, output=None, error=str(e))
+
+    async def _create_repository(self, name: str, description: str, private: bool) -> ToolResult:
+        """Create a new GitHub repository.
+        
+        Args:
+            name: Repository name
+            description: Repository description
+            private: Whether the repository should be private
+            
+        Returns:
+            ToolResult with repository creation status and URL
+        """
+        if not name:
+            return ToolResult(success=False, output=None, error="Repository name is required")
+        
+        import httpx
+        
+        url = f"{self.base_url}/user/repos"
+        headers = {
+            "Authorization": f"token {self.token}",
+            "Accept": "application/vnd.github.v3+json",
+        }
+        data = {
+            "name": name,
+            "description": description or "",
+            "private": private,
+            "auto_init": False,  # Don't initialize with README, we'll do it ourselves
+        }
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, json=data, headers=headers, timeout=30.0)
+                
+                if response.status_code == 201:
+                    repo_data = response.json()
+                    repo_url = repo_data.get("html_url", "")
+                    clone_url = repo_data.get("clone_url", "")
+                    ssh_url = repo_data.get("ssh_url", "")
+                    
+                    return ToolResult(
+                        success=True,
+                        output={
+                            "name": name,
+                            "url": repo_url,
+                            "clone_url": clone_url,
+                            "ssh_url": ssh_url,
+                            "private": private,
+                            "message": f"Repository '{name}' created successfully",
+                        },
+                    )
+                else:
+                    error_text = response.text
+                    return ToolResult(
+                        success=False,
+                        output=None,
+                        error=f"Failed to create repository: {response.status_code} - {error_text}",
+                    )
+        except Exception as e:
+            return ToolResult(
+                success=False,
+                output=None,
+                error=f"Error creating repository: {str(e)}",
+            )
 
     async def _create_pr(self, repo: str, title: str, body: str, head: str, base: str) -> ToolResult:
         """Create a pull request."""

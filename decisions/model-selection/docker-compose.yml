@@ -3,7 +3,7 @@ version: '3.8'
 services:
   ollama:
     image: ollama/ollama:latest
-    container_name: phase1-ollama
+    container_name: ollama
     ports:
       - "11434:11434"
     volumes:
@@ -19,12 +19,12 @@ services:
       - OLLAMA_HOST=0.0.0.0
     restart: unless-stopped
     networks:
-      - phase1-network
+      - network
 
   # Optional: LocalAI alternative
   localai:
     image: localai/localai:latest-aio-cuda
-    container_name: phase1-localai
+    container_name: localai
     ports:
       - "8080:8080"
     volumes:
@@ -42,7 +42,7 @@ services:
       - CONTEXT_SIZE=4096
     restart: unless-stopped
     networks:
-      - phase1-network
+      - network
     profiles:
       - localai  # Only start with: docker-compose --profile localai up
 
@@ -51,7 +51,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.evaluator
-    container_name: phase1-evaluator
+    container_name: evaluator
     volumes:
       - ./outputs:/app/results
       - ./evaluate_model.py:/app/evaluate_model.py
@@ -62,18 +62,20 @@ services:
     depends_on:
       - ollama
     networks:
-      - phase1-network
+      - network
     profiles:
       - evaluator  # Only start when needed
     command: tail -f /dev/null  # Keep container running
 
 volumes:
   ollama-data:
+    name: ollama-data
     driver: local
   localai-data:
+    name: localai-data
     driver: local
 
 networks:
-  phase1-network:
+  network:
     driver: bridge
 

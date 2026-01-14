@@ -33,16 +33,27 @@ class FilesystemOperation(str, Enum):
 class GitOperation(str, Enum):
     """Allowed Git operations."""
 
+    INIT = "init"
+    CLONE = "clone"
+    ADD = "add"
     CREATE_BRANCH = "create_branch"
+    CHECKOUT = "checkout"
     COMMIT = "commit"
     PUSH = "push"
+    PULL = "pull"
+    FETCH = "fetch"
+    MERGE = "merge"
     STATUS = "status"
     DIFF = "diff"
+    LOG = "log"
+    TAG = "tag"
+    ADD_REMOTE = "add_remote"
 
 
 class GitHubOperation(str, Enum):
     """Allowed GitHub operations."""
 
+    CREATE_REPOSITORY = "create_repository"
     CREATE_PR = "create_pr"
     LIST_PRS = "list_prs"
     COMMENT_PR = "comment_pr"
@@ -59,7 +70,8 @@ class SystemOperation(str, Enum):
 
     GET_OS_INFO = "get_os_info"
     GET_RUNTIME_INFO = "get_runtime_info"
-    GET_AGENT_CONFIG = "get_agent_config"
+    GET_AGENT_STATUS = "get_agent_status"
+    GET_WORKSPACE_INFO = "get_workspace_info"
 
 
 # Mapping of tools to their allowed operations
@@ -71,25 +83,80 @@ ALLOWED_OPERATIONS: Dict[ToolName, List[str]] = {
     ToolName.SYSTEM: [op.value for op in SystemOperation],
 }
 
-# Operations that require approval (UPDATE/DELETE operations)
+# Operations that require approval (CREATE/UPDATE/DELETE operations)
+# READ operations (read_file, list_directory, get_os_info, etc.) do NOT require approval
 APPROVAL_REQUIRED_OPERATIONS: Dict[str, List[str]] = {
-    "filesystem": ["write_file", "delete_file", "create_file"],
-    "git": ["commit", "push"],
-    "github": ["create_pr"],
-    "shell": ["execute_command"],  # All shell commands require approval
+    "filesystem": ["write_file", "delete_file", "create_file"],  # read_file, list_directory are read-only, no approval needed
+    "git": ["init", "commit", "push", "add", "checkout", "merge"],  # status, diff, log, etc. are read-only, no approval needed
+    "github": ["create_repository", "create_pr"],  # list_prs, comment_pr might need approval depending on context
+    "shell": [],  # Shell commands are checked dynamically - read-only commands (ls, cat, head, tail, grep, etc.) don't need approval
 }
 
 
-def requires_approval(tool: str, operation: str) -> bool:
+# Read-only shell commands that don't require approval
+READ_ONLY_SHELL_COMMANDS = {
+    "ls", "cat", "head", "tail", "grep", "find", "wc", "sort", "uniq", 
+    "cut", "sed", "awk", "echo", "pwd", "whoami", "date", "git",  # git status, diff, log, etc. are read-only
+    "python", "python3",  # Can be used for read-only scripts
+    "npm",  # Can be used for read-only operations
+}
+
+
+def is_read_only_shell_command(command: str) -> bool:
+    """Check if a shell command is read-only (doesn't modify anything).
+    
+    Args:
+        command: Command string to check
+        
+    Returns:
+        True if command is read-only, False otherwise
+    """
+    if not command:
+        return False
+    
+    # Extract base command (first word, ignoring shell operators)
+    import re
+    parts = re.split(r'\s*(?:&&|\|\||\||;)\s*', command)
+    if not parts:
+        return False
+    
+    cmd_base = parts[0].strip().split()[0] if parts[0] else ""
+    
+    # Check if it's a read-only command
+    if cmd_base in READ_ONLY_SHELL_COMMANDS:
+        # Additional check: git commands that modify state
+        if cmd_base == "git" and len(parts[0].split()) > 1:
+            git_op = parts[0].split()[1]
+            # These git operations modify state and need approval
+            modifying_git_ops = {"add", "commit", "push", "init", "checkout", "merge", "reset", "rebase"}
+            if git_op in modifying_git_ops:
+                return False
+        return True
+    
+    return False
+
+
+def requires_approval(tool: str, operation: str, arguments: dict | None = None) -> bool:
     """Check if an operation requires approval.
 
     Args:
         tool: Tool name
         operation: Operation name
+        arguments: Optional operation arguments (for shell commands to check if read-only)
 
     Returns:
         True if operation requires approval, False otherwise
     """
+    # For shell commands, check if it's read-only
+    if tool == "shell" and operation == "execute_command":
+        if arguments:
+            command = arguments.get("command", "")
+            if is_read_only_shell_command(command):
+                return False  # Read-only commands don't need approval
+            else:
+                return True  # Non-read-only shell commands need approval
+    
+    # Check the approval list for other tools
     return operation in APPROVAL_REQUIRED_OPERATIONS.get(tool, [])
 
 
@@ -104,9 +171,44 @@ def get_operations_requiring_approval(plan: "Plan") -> List["PlanStep"]:
     """
     steps_requiring_approval = []
     for step in plan.steps:
-        if requires_approval(step.tool.value, step.operation):
+        if requires_approval(step.tool.value, step.operation, step.arguments):
             steps_requiring_approval.append(step)
     return steps_requiring_approval
+
+
+def is_restricted_command(command: str, restricted_commands: set[str]) -> bool:
+    """Check if a shell command is restricted.
+    
+    Args:
+        command: Command string to check
+        restricted_commands: Set of restricted command names
+        
+    Returns:
+        True if command is restricted, False otherwise
+    """
+    if not command:
+        return False
+    cmd_base = command.split()[0] if command else ""
+    return cmd_base in restricted_commands
+
+
+def get_restricted_steps(plan: "Plan", restricted_commands: set[str]) -> List["PlanStep"]:
+    """Get list of steps that use restricted commands.
+    
+    Args:
+        plan: Plan to check
+        restricted_commands: Set of restricted command names
+        
+    Returns:
+        List of steps that use restricted commands
+    """
+    restricted_steps = []
+    for step in plan.steps:
+        if step.tool.value == "shell" and step.operation == "execute_command":
+            command = step.arguments.get("command", "")
+            if is_restricted_command(command, restricted_commands):
+                restricted_steps.append(step)
+    return restricted_steps
 
 
 class PlanStep(BaseModel):

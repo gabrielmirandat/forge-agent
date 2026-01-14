@@ -64,19 +64,46 @@ class ShellTool(Tool):
         """Check if command is allowed.
 
         Args:
-            command: Command to check
+            command: Command to check (may contain shell operators like &&, |, etc.)
 
         Returns:
             True if allowed, False otherwise
         """
-        cmd_base = command.split()[0] if command else ""
-
-        if cmd_base in self.restricted_commands:
+        if not command:
             return False
-
-        if self.allowed_commands and cmd_base not in self.allowed_commands:
-            return False
-
+        
+        # For commands with shell operators (&&, |, ;, etc.), check each command separately
+        # Split by common operators and check each part
+        import re
+        # Split by &&, ||, |, ; but preserve the structure
+        parts = re.split(r'\s*(?:&&|\|\||\||;)\s*', command)
+        
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            
+            # Extract the base command (first word)
+            cmd_base = part.split()[0] if part else ""
+            
+            # Check if base command is restricted (only check restricted_commands, not allowed_commands)
+            # We now allow all commands except explicitly restricted ones
+            if cmd_base in self.restricted_commands:
+                return False
+        
+        # If no restricted commands found, allow it
+        # Note: allowed_commands is now optional - if not configured, all commands are allowed (except restricted)
+        if self.allowed_commands:
+            # If allowed_commands is configured, still check it for backward compatibility
+            # But this is now more permissive
+            for part in parts:
+                part = part.strip()
+                if not part:
+                    continue
+                cmd_base = part.split()[0] if part else ""
+                if cmd_base not in self.allowed_commands:
+                    return False
+        
         return True
 
     async def execute(self, operation: str, arguments: dict[str, Any]) -> ToolResult:
@@ -127,10 +154,9 @@ class ShellTool(Tool):
         try:
             import subprocess
             import asyncio
+            import shlex
             
-            # Parse command and arguments
-            cmd_parts = command.split()
-            if not cmd_parts:
+            if not command or not command.strip():
                 return ToolResult(
                     success=False, output=None, error="Empty command"
                 )
@@ -146,13 +172,34 @@ class ShellTool(Tool):
             # Get timeout from arguments (default: 30 seconds)
             timeout = arguments.get("timeout", 30)
             
-            # Execute command
-            process = await asyncio.create_subprocess_exec(
-                *cmd_parts,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(cwd) if cwd else None,
-            )
+            # Check if command contains shell operators (&&, ||, |, ;, etc.)
+            # If so, execute via shell, otherwise execute directly
+            shell_operators = ["&&", "||", "|", ";", ">", ">>", "<", "<<"]
+            use_shell = any(op in command for op in shell_operators)
+            
+            if use_shell:
+                # Execute via shell to support operators
+                process = await asyncio.create_subprocess_shell(
+                    command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=str(cwd) if cwd else None,
+                )
+            else:
+                # Parse command and arguments for direct execution
+                cmd_parts = shlex.split(command)
+                if not cmd_parts:
+                    return ToolResult(
+                        success=False, output=None, error="Empty command"
+                    )
+                
+                # Execute command directly
+                process = await asyncio.create_subprocess_exec(
+                    *cmd_parts,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=str(cwd) if cwd else None,
+                )
             
             try:
                 stdout, stderr = await asyncio.wait_for(

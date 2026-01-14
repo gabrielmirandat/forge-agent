@@ -5,8 +5,6 @@ from agent.storage.models import (
     ApprovalStatus,
     Message,
     MessageRole,
-    RunRecord,
-    RunSummary,
     Session,
     SessionSummary,
 )
@@ -16,8 +14,6 @@ __all__ = [
     "Storage",
     "StorageError",
     "NotFoundError",
-    "RunRecord",
-    "RunSummary",
     "ApprovalStatus",
     "SQLiteStorage",
     "Session",
@@ -25,4 +21,3 @@ __all__ = [
     "Message",
     "MessageRole",
 ]
-

@@ -20,12 +20,23 @@ class WorkspaceConfig(BaseModel):
 class LLMConfig(BaseModel):
     """LLM provider configuration."""
 
-    provider: str = Field(default="localai", description="LLM provider name")
-    base_url: str = Field(default="http://localhost:8080", description="LLM API base URL")
+    provider: str = Field(default="localai", description="LLM provider name (ollama, airllm, localai)")
+    base_url: str = Field(default="http://localhost:8080", description="LLM API base URL (for ollama/localai)")
     model: str = Field(default="gpt-3.5-turbo", description="Model name")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="Temperature")
     max_tokens: int = Field(default=4096, gt=0, description="Max tokens")
     timeout: int = Field(default=300, gt=0, description="Request timeout in seconds")
+    
+    # AirLLM-specific optional fields
+    compression: str | None = Field(default=None, description="AirLLM compression: '4bit', '8bit', or None")
+    hf_token: str | None = Field(default=None, description="HuggingFace token for gated models")
+    profiling_mode: bool = Field(default=False, description="AirLLM profiling mode")
+    layer_shards_saving_path: str | None = Field(default=None, description="AirLLM layer shards path")
+    delete_original: bool = Field(default=False, description="AirLLM: delete original model after splitting")
+    
+    class Config:
+        """Pydantic config to allow extra fields."""
+        extra = "allow"  # Allow extra fields from YAML for provider-specific config
 
 
 class HumanInTheLoopConfig(BaseModel):

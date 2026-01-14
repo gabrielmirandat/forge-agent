@@ -174,7 +174,15 @@ class FilesystemTool(Tool):
             elif operation == "list_directory":
                 return await self._list(file_path)
             elif operation == "create_file":
-                return await self._create(file_path, arguments.get("is_dir", False))
+                # create_file can create both files and directories
+                # If content is provided, it's a file with content; otherwise check is_dir
+                content = arguments.get("content")
+                if content is not None:
+                    # Create file with content (use write_file logic)
+                    return await self._write(file_path, content)
+                else:
+                    # Create empty file or directory based on is_dir
+                    return await self._create(file_path, arguments.get("is_dir", False))
             elif operation == "delete_file":
                 return await self._delete(file_path)
             else:
@@ -233,9 +241,38 @@ class FilesystemTool(Tool):
             return ToolResult(success=False, output=None, error=f"Failed to read file: {e}")
 
     async def _write(self, path: Path, content: str) -> ToolResult:
-        """Write file contents."""
-        # TODO: Implement file writing
-        raise NotImplementedError("File writing not yet implemented")
+        """Write file contents.
+        
+        Args:
+            path: Path to the file
+            content: Content to write
+            
+        Returns:
+            ToolResult with write status
+        """
+        try:
+            # Ensure parent directory exists
+            path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Write file content
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+            
+            # Get file size after writing
+            file_size = path.stat().st_size
+            
+            return ToolResult(
+                success=True,
+                output={
+                    "path": str(path),
+                    "size": file_size,
+                    "lines": len(content.splitlines()) if content else 0,
+                },
+            )
+        except PermissionError as e:
+            return ToolResult(success=False, output=None, error=f"Permission denied: {e}")
+        except Exception as e:
+            return ToolResult(success=False, output=None, error=f"Failed to write file: {e}")
 
     async def _list(self, path: Path) -> ToolResult:
         """List directory contents."""
@@ -271,9 +308,45 @@ class FilesystemTool(Tool):
             return ToolResult(success=False, output=None, error=f"Failed to list directory: {e}")
 
     async def _create(self, path: Path, is_dir: bool) -> ToolResult:
-        """Create file or directory."""
-        # TODO: Implement file/directory creation
-        raise NotImplementedError("File/directory creation not yet implemented")
+        """Create file or directory.
+        
+        Args:
+            path: Path to create
+            is_dir: If True, create directory; if False, create empty file
+            
+        Returns:
+            ToolResult with creation status
+        """
+        try:
+            # Check if path already exists
+            if path.exists():
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error=f"Path already exists: {path}",
+                )
+            
+            # Ensure parent directory exists
+            path.parent.mkdir(parents=True, exist_ok=True)
+            
+            if is_dir:
+                # Create directory
+                path.mkdir(parents=True, exist_ok=True)
+                return ToolResult(
+                    success=True,
+                    output={"path": str(path), "type": "directory"},
+                )
+            else:
+                # Create empty file
+                path.touch()
+                return ToolResult(
+                    success=True,
+                    output={"path": str(path), "type": "file", "size": 0},
+                )
+        except PermissionError as e:
+            return ToolResult(success=False, output=None, error=f"Permission denied: {e}")
+        except Exception as e:
+            return ToolResult(success=False, output=None, error=f"Failed to create: {e}")
 
     async def _delete(self, path: Path) -> ToolResult:
         """Delete file or directory."""

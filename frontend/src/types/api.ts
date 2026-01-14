@@ -23,30 +23,6 @@ export interface ExecuteResponse {
   execution_result: ExecutionResult;
 }
 
-export interface RunRequest {
-  goal: string;
-  context?: Record<string, unknown>;
-  execution_policy?: ExecutionPolicy;
-}
-
-export interface RunResponse {
-  plan_result: {
-    plan: Plan;
-    diagnostics: PlannerDiagnostics;
-  };
-  execution_result: ExecutionResult | null; // null if pending approval
-}
-
-export interface RunsListResponse {
-  runs: RunSummary[];
-  limit: number;
-  offset: number;
-}
-
-export interface RunDetailResponse {
-  run: RunRecord;
-}
-
 // Core types
 
 export interface Plan {
@@ -116,32 +92,6 @@ export interface RollbackStepResult {
   finished_at: number;
 }
 
-export interface RunSummary {
-  run_id: string;
-  plan_id: string;
-  objective: string;
-  success: boolean;
-  created_at: number;
-}
-
-export type ApprovalStatus = 'pending' | 'approved' | 'rejected';
-
-export interface RunRecord {
-  run_id: string;
-  plan_id: string;
-  objective: string;
-  plan_result: {
-    plan: Plan;
-    diagnostics: PlannerDiagnostics;
-  };
-  execution_result: ExecutionResult | null; // null if not executed
-  created_at: number;
-  approval_status: ApprovalStatus;
-  approval_reason?: string | null;
-  approved_at?: number | null;
-  approved_by?: string | null;
-}
-
 // Session types
 export interface CreateSessionRequest {
   title?: string;
@@ -168,6 +118,7 @@ export interface MessageResponse {
   } | null;
   execution_result?: ExecutionResult | null;
   pending_approval_steps?: number[] | null;
+  restricted_steps?: number[] | null;
 }
 
 export interface SessionResponse {

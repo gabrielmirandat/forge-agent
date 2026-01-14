@@ -9,10 +9,6 @@ import type {
   ExecuteResponse,
   PlanRequest,
   PlanResponse,
-  RunDetailResponse,
-  RunRequest,
-  RunResponse,
-  RunsListResponse,
 } from '../types/api';
 
 const API_BASE = '/api/v1';
@@ -44,90 +40,6 @@ async function fetchJson<T>(
   }
 
   return response.json();
-}
-
-export async function run(
-  goal: string,
-  context?: Record<string, unknown>,
-  executionPolicy?: {
-    max_retries_per_step?: number;
-    retry_delay_seconds?: number;
-    rollback_on_failure?: boolean;
-  }
-): Promise<RunResponse> {
-  const request: RunRequest = {
-    goal,
-    ...(context && { context }),
-    ...(executionPolicy && {
-      execution_policy: {
-        max_retries_per_step: executionPolicy.max_retries_per_step ?? 0,
-        retry_delay_seconds: executionPolicy.retry_delay_seconds ?? 0.0,
-        rollback_on_failure: executionPolicy.rollback_on_failure ?? false,
-      },
-    }),
-  };
-
-  return fetchJson<RunResponse>(`${API_BASE}/run`, {
-    method: 'POST',
-    body: JSON.stringify(request),
-  });
-}
-
-export async function listRuns(
-  limit: number = 20,
-  offset: number = 0
-): Promise<RunsListResponse> {
-  return fetchJson<RunsListResponse>(
-    `${API_BASE}/runs?limit=${limit}&offset=${offset}`
-  );
-}
-
-export async function getRun(runId: string): Promise<RunDetailResponse> {
-  return fetchJson<RunDetailResponse>(`${API_BASE}/runs/${runId}`);
-}
-
-export async function approveRun(
-  runId: string,
-  approvedBy: string,
-  reason?: string,
-  executionPolicy?: {
-    max_retries_per_step?: number;
-    retry_delay_seconds?: number;
-    rollback_on_failure?: boolean;
-  }
-): Promise<{ run_id: string; approval_status: string; execution_result: any }> {
-  const request: any = {
-    approved_by: approvedBy,
-    ...(reason && { reason }),
-    ...(executionPolicy && {
-      execution_policy: {
-        max_retries_per_step: executionPolicy.max_retries_per_step ?? 0,
-        retry_delay_seconds: executionPolicy.retry_delay_seconds ?? 0.0,
-        rollback_on_failure: executionPolicy.rollback_on_failure ?? false,
-      },
-    }),
-  };
-
-  return fetchJson(`${API_BASE}/runs/${runId}/approve`, {
-    method: 'POST',
-    body: JSON.stringify(request),
-  });
-}
-
-export async function rejectRun(
-  runId: string,
-  rejectedBy: string,
-  reason: string
-): Promise<{ status: string; run_id: string }> {
-  const request = {
-    rejected_by: rejectedBy,
-    reason,
-  };
-
-  return fetchJson(`${API_BASE}/runs/${runId}/reject`, {
-    method: 'POST',
-    body: JSON.stringify(request),
-  });
 }
 
 export async function plan(

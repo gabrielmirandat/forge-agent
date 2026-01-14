@@ -119,6 +119,10 @@ agent:
         - cut
         - sort
         - uniq
+        - mkdir  # Create directories
+        - mv  # Move/rename files
+        - cp  # Copy files
+        - echo  # Print text (useful for debugging and simple operations)
         - git
         - npm
         - python

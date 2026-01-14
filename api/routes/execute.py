@@ -2,14 +2,12 @@
 
 import logging
 import uuid
-from typing import Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from agent.runtime.executor import Executor
 from agent.runtime.schema import (
     ExecutionPolicy,
-    ExecutionError,
     Plan,
 )
 from api.dependencies import get_executor

@@ -2,8 +2,14 @@
 
 from api.schemas.execute import ExecuteRequest, ExecuteResponse, ExecutionPolicyRequest
 from api.schemas.plan import PlanRequest, PlanResponse
-from api.schemas.run import RunRequest, RunResponse
-from api.schemas.runs import RunDetailResponse, RunsListResponse
+from api.schemas.session import (
+    CreateSessionRequest,
+    CreateSessionResponse,
+    MessageRequest,
+    MessageResponse,
+    SessionResponse,
+    SessionsListResponse,
+)
 
 __all__ = [
     "PlanRequest",
@@ -11,9 +17,11 @@ __all__ = [
     "ExecuteRequest",
     "ExecuteResponse",
     "ExecutionPolicyRequest",
-    "RunRequest",
-    "RunResponse",
-    "RunsListResponse",
-    "RunDetailResponse",
+    "CreateSessionRequest",
+    "CreateSessionResponse",
+    "MessageRequest",
+    "MessageResponse",
+    "SessionResponse",
+    "SessionsListResponse",
 ]
 
