@@ -55,6 +55,7 @@ class Executor:
         config: AgentConfig,
         tool_registry: ToolRegistry,
         execution_policy: ExecutionPolicy | None = None,
+        session_id: str | None = None,
     ):
         """Initialize executor.
 
@@ -63,11 +64,13 @@ class Executor:
             tool_registry: Registry of available tools
             execution_policy: Execution policy for retries and rollback.
                 If None, defaults to no retries and no rollback (Phase 3 behavior).
+            session_id: Optional session ID for tmux context
         """
         self.config = config
         self.tool_registry = tool_registry
         self.policy = execution_policy or ExecutionPolicy()  # Default: no retries, no rollback
         self.logger = get_logger("executor", "executor")
+        self.session_id = session_id
 
     async def execute(self, plan: Plan) -> ExecutionResult:
         """Execute a plan deterministically.
@@ -251,6 +254,12 @@ class Executor:
         try:
             # Validate tool exists
             tool = self.tool_registry.validate_tool(tool_name)
+
+            # Pass session_id to all tools (for tmux context)
+            # This allows all tools to maintain directory context across operations
+            if self.session_id:
+                arguments = arguments.copy()
+                arguments["_session_id"] = self.session_id
 
             # Execute tool operation
             tool_result = await tool.execute(operation=operation, arguments=arguments)

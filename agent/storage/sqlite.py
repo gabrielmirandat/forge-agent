@@ -55,10 +55,22 @@ class SQLiteStorage(Storage):
                     session_id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
                     created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
+                    updated_at REAL NOT NULL,
+                    tmux_session TEXT
                 )
             """
             )
+            
+            # Add tmux_session column to existing sessions table (migration)
+            try:
+                await db.execute(
+                    """
+                    ALTER TABLE sessions ADD COLUMN tmux_session TEXT
+                """
+                )
+            except Exception:
+                # Column already exists, ignore
+                pass
 
             # Create messages table
             await db.execute(
@@ -113,14 +125,24 @@ class SQLiteStorage(Storage):
         now = time.time()
         final_title = title or "New Chat"
 
+        # Create tmux session for this agent session
+        from agent.tools.tmux import get_tmux_manager
+        tmux_manager = get_tmux_manager()
+        try:
+            tmux_session = await tmux_manager.create_session(session_id)
+            self.logger.info(f"Successfully created tmux session {tmux_session} for agent session {session_id}")
+        except Exception as e:
+            self.logger.error(f"Failed to create tmux session for {session_id}: {e}", exc_info=True)
+            tmux_session = None
+
         try:
             async with aiosqlite.connect(self.db_path) as db:
                 await db.execute(
                     """
-                    INSERT INTO sessions (session_id, title, created_at, updated_at)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO sessions (session_id, title, created_at, updated_at, tmux_session)
+                    VALUES (?, ?, ?, ?, ?)
                 """,
-                    (session_id, final_title, now, now),
+                    (session_id, final_title, now, now, tmux_session),
                 )
                 await db.commit()
 
@@ -132,6 +154,12 @@ class SQLiteStorage(Storage):
                 updated_at=now,
             )
         except Exception as e:
+            # If database insert fails, clean up tmux session
+            if tmux_session:
+                try:
+                    await tmux_manager.delete_session(tmux_session)
+                except Exception:
+                    pass
             raise StorageError(f"Failed to create session: {e}") from e
 
     async def get_session(self, session_id: str) -> Session:
@@ -359,6 +387,35 @@ class SQLiteStorage(Storage):
         except Exception as e:
             raise StorageError(f"Failed to update session title: {e}") from e
 
+    async def get_tmux_session(self, session_id: str) -> str | None:
+        """Get tmux session name for an agent session.
+        
+        Args:
+            session_id: Agent session ID
+            
+        Returns:
+            Tmux session name or None if not found
+            
+        Raises:
+            NotFoundError: If session not found
+        """
+        await self._ensure_initialized()
+        
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute(
+                    "SELECT tmux_session FROM sessions WHERE session_id = ?", (session_id,)
+                ) as cursor:
+                    session_row = await cursor.fetchone()
+                    if session_row is None:
+                        raise NotFoundError(f"Session not found: {session_id}")
+                    return session_row["tmux_session"]
+        except NotFoundError:
+            raise
+        except Exception as e:
+            raise StorageError(f"Failed to get tmux session: {e}") from e
+
     async def delete_session(self, session_id: str) -> None:
         """Delete a session and all its messages.
 
@@ -373,12 +430,15 @@ class SQLiteStorage(Storage):
 
         try:
             async with aiosqlite.connect(self.db_path) as db:
-                # Check if session exists
+                # Get tmux_session before deleting
+                db.row_factory = aiosqlite.Row
                 async with db.execute(
-                    "SELECT session_id FROM sessions WHERE session_id = ?", (session_id,)
+                    "SELECT tmux_session FROM sessions WHERE session_id = ?", (session_id,)
                 ) as cursor:
-                    if await cursor.fetchone() is None:
+                    session_row = await cursor.fetchone()
+                    if session_row is None:
                         raise NotFoundError(f"Session not found: {session_id}")
+                    tmux_session = session_row["tmux_session"]
 
                 # Delete messages first (foreign key constraint)
                 await db.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
@@ -387,6 +447,22 @@ class SQLiteStorage(Storage):
                 await db.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
                 
                 await db.commit()
+
+            # Delete tmux session if it exists
+            if tmux_session:
+                from agent.tools.tmux import get_tmux_manager
+                tmux_manager = get_tmux_manager()
+                try:
+                    deleted = await tmux_manager.delete_session(tmux_session)
+                    if deleted:
+                        self.logger.info(f"Successfully deleted tmux session {tmux_session} for session {session_id}")
+                    else:
+                        self.logger.warning(f"Tmux session {tmux_session} was not found or already deleted")
+                except Exception as e:
+                    self.logger.error(f"Failed to delete tmux session {tmux_session}: {e}", exc_info=True)
+            else:
+                self.logger.warning(f"No tmux_session found for session {session_id}, skipping tmux cleanup")
+
         except NotFoundError:
             raise
         except Exception as e:

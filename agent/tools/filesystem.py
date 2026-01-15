@@ -152,6 +152,55 @@ class FilesystemTool(Tool):
                 success=False, output=None, error="Missing required argument: 'path'"
             )
 
+        # session_id is mandatory - always use tmux's current directory to resolve relative paths
+        session_id = arguments.get("_session_id")
+        if not session_id:
+            return ToolResult(
+                success=False,
+                output=None,
+                error="Missing required argument: '_session_id'. Session ID is mandatory.",
+            )
+        
+        from agent.tools.tmux import get_tmux_manager
+        from agent.storage.sqlite import SQLiteStorage
+        
+        tmux_manager = get_tmux_manager()
+        storage = SQLiteStorage("forge_agent.db")
+        
+        # Get tmux session (mandatory)
+        tmux_session = await storage.get_tmux_session(session_id)
+        if not tmux_session:
+            return ToolResult(
+                success=False,
+                output=None,
+                error=f"Tmux session not found for session {session_id}",
+            )
+        
+        # Get current working directory from tmux session
+        cwd = await tmux_manager.get_working_directory(tmux_session)
+        if not cwd:
+            return ToolResult(
+                success=False,
+                output=None,
+                error=f"Failed to get working directory from tmux session {tmux_session}",
+            )
+        
+        # Expand and resolve cwd to ensure it's absolute
+        cwd = str(Path(cwd).expanduser().resolve())
+        
+        # Always expand ~ in path first
+        path_expanded = str(Path(path).expanduser())
+        
+        # Resolve path relative to tmux's current directory
+        if path == ".":
+            path = cwd
+        elif not Path(path_expanded).is_absolute():
+            # Join relative path with tmux session's current directory
+            path = str(Path(cwd) / path_expanded)
+        else:
+            path = path_expanded
+        
+        # Resolve path (expand ~ and resolve to absolute)
         file_path = Path(path).expanduser().resolve()
 
         # CONTRACT ENFORCEMENT: Path validation is mandatory
@@ -185,6 +234,9 @@ class FilesystemTool(Tool):
                     return await self._create(file_path, arguments.get("is_dir", False))
             elif operation == "delete_file":
                 return await self._delete(file_path)
+            elif operation == "change_directory":
+                # change_directory validates the path and changes directory in tmux (session_id is mandatory)
+                return await self._change_directory(file_path, session_id)
             else:
                 raise OperationNotSupportedError(self.name, operation)
         except OperationNotSupportedError:
@@ -347,6 +399,93 @@ class FilesystemTool(Tool):
             return ToolResult(success=False, output=None, error=f"Permission denied: {e}")
         except Exception as e:
             return ToolResult(success=False, output=None, error=f"Failed to create: {e}")
+
+    async def _change_directory(self, path: Path, session_id: str) -> ToolResult:
+        """Change directory and update tmux session.
+        
+        This operation validates that the path exists and is accessible,
+        and changes the directory in the tmux session.
+        
+        Args:
+            path: Directory path to change to
+            session_id: Session ID (mandatory)
+            
+        Returns:
+            ToolResult with validation status
+        """
+        try:
+            if not path.exists():
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error=f"Directory does not exist: {path}",
+                )
+            
+            if not path.is_dir():
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error=f"Path is not a directory: {path}",
+                )
+            
+            # Change directory in tmux session (mandatory)
+            from agent.tools.tmux import get_tmux_manager
+            from agent.storage.sqlite import SQLiteStorage
+            
+            tmux_manager = get_tmux_manager()
+            storage = SQLiteStorage("forge_agent.db")
+            
+            # Get tmux session
+            tmux_session = await storage.get_tmux_session(session_id)
+            if not tmux_session:
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error=f"Tmux session not found for session {session_id}",
+                )
+            
+            # Execute cd command directly in tmux session using send_keys
+            # This changes the directory in the tmux session itself, not just in a subprocess
+            path_resolved = Path(path).expanduser().resolve()
+            
+            # Get current tmux directory to use relative path if possible
+            current_tmux_cwd = await tmux_manager.get_working_directory(tmux_session)
+            if current_tmux_cwd:
+                current_tmux_cwd = Path(current_tmux_cwd).expanduser().resolve()
+                # If path is within current directory, use relative path for cd
+                try:
+                    relative_path = path_resolved.relative_to(current_tmux_cwd)
+                    path_str = str(relative_path)
+                except ValueError:
+                    # Path is not relative to current directory, use absolute path
+                    path_str = str(path_resolved)
+            else:
+                # Fallback to absolute path
+                path_str = str(path_resolved)
+            
+            # Execute cd via execute_command (which uses send_keys to run in tmux)
+            return_code, stdout, stderr = await tmux_manager.execute_command(
+                tmux_session,
+                f"cd {path_str}",
+                timeout=5.0,
+            )
+            
+            if return_code != 0:
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error=f"Failed to change directory in tmux: {stderr or stdout}",
+                )
+            
+            return ToolResult(
+                success=True,
+                output={
+                    "path": str(path),
+                    "message": f"Changed to directory: {path}",
+                },
+            )
+        except Exception as e:
+            return ToolResult(success=False, output=None, error=f"Failed to change directory: {e}")
 
     async def _delete(self, path: Path) -> ToolResult:
         """Delete file or directory."""

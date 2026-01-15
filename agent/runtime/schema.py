@@ -28,6 +28,7 @@ class FilesystemOperation(str, Enum):
     LIST_DIRECTORY = "list_directory"
     CREATE_FILE = "create_file"
     DELETE_FILE = "delete_file"
+    CHANGE_DIRECTORY = "change_directory"
 
 
 class GitOperation(str, Enum):
@@ -36,6 +37,7 @@ class GitOperation(str, Enum):
     INIT = "init"
     CLONE = "clone"
     ADD = "add"
+    ADD_ALL = "add_all"
     CREATE_BRANCH = "create_branch"
     CHECKOUT = "checkout"
     COMMIT = "commit"
@@ -54,6 +56,7 @@ class GitHubOperation(str, Enum):
     """Allowed GitHub operations."""
 
     CREATE_REPOSITORY = "create_repository"
+    CREATE_REPOSITORY_WITH_CLI = "create_repository_with_cli"
     CREATE_PR = "create_pr"
     LIST_PRS = "list_prs"
     COMMENT_PR = "comment_pr"
@@ -86,9 +89,9 @@ ALLOWED_OPERATIONS: Dict[ToolName, List[str]] = {
 # Operations that require approval (CREATE/UPDATE/DELETE operations)
 # READ operations (read_file, list_directory, get_os_info, etc.) do NOT require approval
 APPROVAL_REQUIRED_OPERATIONS: Dict[str, List[str]] = {
-    "filesystem": ["write_file", "delete_file", "create_file"],  # read_file, list_directory are read-only, no approval needed
-    "git": ["init", "commit", "push", "add", "checkout", "merge"],  # status, diff, log, etc. are read-only, no approval needed
-    "github": ["create_repository", "create_pr"],  # list_prs, comment_pr might need approval depending on context
+    "filesystem": ["write_file", "delete_file", "create_file"],  # read_file, list_directory, change_directory are read-only, no approval needed
+    "git": ["init", "commit", "push", "add", "add_all", "checkout", "merge"],  # status, diff, log, etc. are read-only, no approval needed
+    "github": ["create_repository", "create_repository_with_cli", "create_pr"],  # list_prs, comment_pr might need approval depending on context
     "shell": [],  # Shell commands are checked dynamically - read-only commands (ls, cat, head, tail, grep, etc.) don't need approval
 }
 

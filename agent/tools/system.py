@@ -52,10 +52,11 @@ class SystemTool(Tool):
         CONTRACT ENFORCEMENT:
         - System tool MUST only support read-only operations
         - No operations that modify system state
+        - session_id is mandatory (even though this tool doesn't execute commands in tmux)
         
         Args:
             operation: Operation type (get_os_info, get_runtime_info, get_agent_status, get_workspace_info)
-            arguments: Operation arguments
+            arguments: Operation arguments (must include _session_id)
             
         Returns:
             Tool execution result with system information
@@ -65,6 +66,15 @@ class SystemTool(Tool):
                 success=False,
                 output=None,
                 error="System tool is disabled",
+            )
+        
+        # session_id is mandatory (even though this tool doesn't execute commands in tmux)
+        session_id = arguments.get("_session_id")
+        if not session_id:
+            return ToolResult(
+                success=False,
+                output=None,
+                error="Missing required argument: '_session_id'. Session ID is mandatory.",
             )
 
         try:

@@ -98,6 +98,7 @@ export function ChatPage() {
   const [sending, setSending] = useState(false);
   const [approving, setApproving] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -311,14 +312,16 @@ export function ChatPage() {
     }
   };
 
-  // Handle delete session
-  const handleDeleteSession = async (sessionIdToDelete: string, e: React.MouseEvent) => {
+  // Handle delete session - show confirmation icons
+  const handleDeleteClick = (sessionIdToDelete: string, e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent navigation when clicking delete
+    setConfirmingDelete(sessionIdToDelete);
+  };
 
-    if (!confirm('Are you sure you want to delete this session?')) {
-      return;
-    }
-
+  // Handle confirm delete
+  const handleConfirmDelete = async (sessionIdToDelete: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setConfirmingDelete(null);
     setDeleting(sessionIdToDelete);
     setError(null);
 
@@ -337,6 +340,12 @@ export function ChatPage() {
     } finally {
       setDeleting(null);
     }
+  };
+
+  // Handle cancel delete
+  const handleCancelDelete = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setConfirmingDelete(null);
   };
 
   return (
@@ -434,34 +443,95 @@ export function ChatPage() {
               >
                 {session.title}
               </span>
-              <button
-                onClick={(e) => handleDeleteSession(session.session_id, e)}
-                disabled={deleting === session.session_id}
-                style={{
-                  padding: '0',
-                  background: 'transparent',
-                  color: '#888',
-                  border: 'none',
-                  cursor: deleting === session.session_id ? 'not-allowed' : 'pointer',
-                  fontSize: '1rem',
-                  flexShrink: 0,
-                  width: '20px',
-                  height: '20px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  opacity: deleting === session.session_id ? 0.5 : 1,
-                }}
-                title="Delete session"
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.color = '#fff';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.color = '#888';
-                }}
-              >
-                {deleting === session.session_id ? '...' : '✕'}
-              </button>
+              {confirmingDelete === session.session_id ? (
+                <div style={{ display: 'flex', gap: '0.25rem', alignItems: 'center' }}>
+                  <button
+                    onClick={(e) => handleConfirmDelete(session.session_id, e)}
+                    disabled={deleting === session.session_id}
+                    style={{
+                      padding: '0',
+                      background: 'transparent',
+                      color: '#19c37d',
+                      border: 'none',
+                      cursor: deleting === session.session_id ? 'not-allowed' : 'pointer',
+                      fontSize: '1rem',
+                      flexShrink: 0,
+                      width: '20px',
+                      height: '20px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      opacity: deleting === session.session_id ? 0.5 : 1,
+                    }}
+                    title="Confirm delete"
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.color = '#1dd085';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.color = '#19c37d';
+                    }}
+                  >
+                    ✓
+                  </button>
+                  <button
+                    onClick={handleCancelDelete}
+                    disabled={deleting === session.session_id}
+                    style={{
+                      padding: '0',
+                      background: 'transparent',
+                      color: '#dc3545',
+                      border: 'none',
+                      cursor: deleting === session.session_id ? 'not-allowed' : 'pointer',
+                      fontSize: '1rem',
+                      flexShrink: 0,
+                      width: '20px',
+                      height: '20px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      opacity: deleting === session.session_id ? 0.5 : 1,
+                    }}
+                    title="Cancel delete"
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.color = '#e74c3c';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.color = '#dc3545';
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={(e) => handleDeleteClick(session.session_id, e)}
+                  disabled={deleting === session.session_id}
+                  style={{
+                    padding: '0',
+                    background: 'transparent',
+                    color: '#888',
+                    border: 'none',
+                    cursor: deleting === session.session_id ? 'not-allowed' : 'pointer',
+                    fontSize: '1rem',
+                    flexShrink: 0,
+                    width: '20px',
+                    height: '20px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    opacity: deleting === session.session_id ? 0.5 : 1,
+                  }}
+                  title="Delete session"
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.color = '#fff';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.color = '#888';
+                  }}
+                >
+                  {deleting === session.session_id ? '...' : '✕'}
+                </button>
+              )}
             </div>
           ))}
         </div>

@@ -797,7 +797,7 @@ async def send_message(
                         execution_policy = ExecutionPolicy(**request.execution_policy)
 
                     tool_registry = get_tool_registry(config)
-                    executor = Executor(config, tool_registry, execution_policy)
+                    executor = Executor(config, tool_registry, execution_policy, session_id=session_id)
 
                     execution_result_obj = await executor.execute(plan_result_obj.plan)
                     execution_result = execution_result_obj.model_dump()

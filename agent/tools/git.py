@@ -34,6 +34,8 @@ class GitTool(Tool):
         # Path validation: Use same allowed_paths/restricted_paths as filesystem tool
         self.allowed_paths = [Path(p).expanduser().resolve() for p in config.get("allowed_paths", [])]
         self.restricted_paths = [Path(p).expanduser().resolve() for p in config.get("restricted_paths", [])]
+        # Temporary storage for session_id during execution
+        self._current_session_id: str | None = None
 
     async def execute(self, operation: str, arguments: dict[str, Any]) -> ToolResult:
         """Execute Git operation.
@@ -48,9 +50,49 @@ class GitTool(Tool):
         if not self.enabled:
             return ToolResult(success=False, output=None, error="Git tool is disabled")
 
+        # session_id is mandatory - always use tmux
+        session_id = arguments.get("_session_id")
+        if not session_id:
+            return ToolResult(
+                success=False,
+                output=None,
+                error="Missing required argument: '_session_id'. Session ID is mandatory.",
+            )
+        
+        self._current_session_id = session_id
+        
         # Extract repo_path from arguments
         repo_path = arguments.get("repo_path", ".")
-        repo = Path(repo_path).expanduser().resolve()
+        
+        # Always get current directory from tmux session when repo_path is "."
+        if repo_path == ".":
+            from agent.tools.tmux import get_tmux_manager
+            from agent.storage.sqlite import SQLiteStorage
+            
+            tmux_manager = get_tmux_manager()
+            storage = SQLiteStorage("forge_agent.db")
+            
+            # Get tmux session (mandatory)
+            tmux_session = await storage.get_tmux_session(session_id)
+            if not tmux_session:
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error=f"Tmux session not found for session {session_id}",
+                )
+            
+            # Get current working directory from tmux session
+            cwd = await tmux_manager.get_working_directory(tmux_session)
+            if not cwd:
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error=f"Failed to get working directory from tmux session {tmux_session}",
+                )
+            
+            repo = Path(cwd).resolve()
+        else:
+            repo = Path(repo_path).expanduser().resolve()
         
         # Validate path for all operations (except init and clone which validate internally)
         if operation not in ("init", "clone") and not self._check_path(repo):
@@ -74,6 +116,9 @@ class GitTool(Tool):
             elif operation == "add":
                 files = arguments.get("files", [])
                 return await self._add(repo, files)
+            elif operation == "add_all":
+                # add_all is an alias for add with empty files list
+                return await self._add(repo, [])
             elif operation == "create_branch":
                 branch_name = arguments.get("branch_name", "")
                 return await self._create_branch(repo, branch_name)
@@ -226,22 +271,53 @@ class GitTool(Tool):
         Returns:
             Tuple of (return_code, stdout, stderr)
         """
-        try:
-            process = await asyncio.create_subprocess_exec(
-                "git",
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(repo),
+        # Build git command
+        git_cmd = " ".join(["git"] + list(args))
+        
+        # If we have session_id, always execute in tmux session (tmux must be available)
+        if self._current_session_id:
+            from agent.tools.tmux import get_tmux_manager
+            from agent.storage.sqlite import SQLiteStorage
+            
+            tmux_manager = get_tmux_manager()
+            storage = SQLiteStorage("forge_agent.db")
+            
+            # Tmux must be available - no fallback
+            tmux_session = await storage.get_tmux_session(self._current_session_id)
+            if not tmux_session:
+                return (1, "", f"Tmux session not found for session {self._current_session_id}")
+            
+            # Ensure we're in the correct directory
+            repo_str = str(repo)
+            current_cwd = await tmux_manager.get_working_directory(tmux_session)
+            if current_cwd != repo_str:
+                await tmux_manager.execute_command(
+                    tmux_session,
+                    f"cd {repo_str}",
+                    timeout=5.0,
+                )
+            
+            # Execute git command in tmux session
+            return await tmux_manager.execute_command(
+                tmux_session,
+                git_cmd,
+                timeout=60.0,
             )
-            stdout, stderr = await process.communicate()
-            return (
-                process.returncode,
-                stdout.decode("utf-8", errors="replace"),
-                stderr.decode("utf-8", errors="replace"),
-            )
-        except Exception as e:
-            return (1, "", str(e))
+        
+        # No session_id - execute directly (should not happen in normal flow)
+        process = await asyncio.create_subprocess_exec(
+            "git",
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(repo),
+        )
+        stdout, stderr = await process.communicate()
+        return (
+            process.returncode,
+            stdout.decode("utf-8", errors="replace"),
+            stderr.decode("utf-8", errors="replace"),
+        )
 
     async def _add(self, repo: Path, files: list[str]) -> ToolResult:
         """Add files to staging area.

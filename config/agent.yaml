@@ -70,13 +70,17 @@ agent:
     
     # GITHUB TOOL
     # Purpose: Structured GitHub API operations
-    # Contract: Create PRs, list PRs, comment on PRs
+    # Contract: Create PRs, list PRs, comment on PRs, create repositories
     # Forbidden: Arbitrary API calls, file I/O, Git operations
     # Security: Authentication required (GITHUB_TOKEN), structured API only
     # Overlap: Use github for GitHub API, use git for local Git operations
+    # GitHub CLI: For create_repository_with_cli, ensure 'gh' is installed and authenticated
+    #   - Install: https://cli.github.com/
+    #   - Authenticate: gh auth login OR set GITHUB_TOKEN environment variable
     github:
       enabled: true
       # Token should be set via environment variable GITHUB_TOKEN
+      # For GitHub CLI operations, ensure 'gh' CLI is installed and authenticated
       base_url: https://api.github.com
       auto_create_pr: false
       pr_title_template: "Agent: {title}"
@@ -104,31 +108,10 @@ agent:
     # Priority: Shell should be LAST resort - prefer structured tools (filesystem, system, git) when possible
     shell:
       enabled: true
-      # Allowed commands: Base commands that can be executed (first word of command)
-      # Arguments are not validated (trusted if base command is allowed)
-      # Only add commands that require execution semantics
-      allowed_commands:
-        - ls  # Note: Prefer filesystem.list_directory when possible
-        - head
-        - tail
-        - grep
-        - cat
-        - wc
-        - sed
-        - awk
-        - cut
-        - sort
-        - uniq
-        - mkdir  # Create directories
-        - mv  # Move/rename files
-        - cp  # Copy files
-        - echo  # Print text (useful for debugging and simple operations)
-        - git
-        - npm
-        - python
-        - python3
-        - docker
-        - docker-compose
+      # Allowed commands: If empty or not configured, ALL commands are allowed (except restricted ones)
+      # If you want to restrict to specific commands, list them here
+      # By default, we allow all commands except those explicitly restricted below
+      allowed_commands: []  # Empty list = allow all commands (except restricted)
       # Restricted commands: Commands that should NEVER be executed
       # These are blocked even if they appear in allowed_commands (restricted takes priority)
       restricted_commands:

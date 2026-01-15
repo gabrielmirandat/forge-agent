@@ -86,16 +86,13 @@ class ShellTool(Tool):
             # Extract the base command (first word)
             cmd_base = part.split()[0] if part else ""
             
-            # Check if base command is restricted (only check restricted_commands, not allowed_commands)
-            # We now allow all commands except explicitly restricted ones
+            # FIRST: Check if base command is explicitly restricted (highest priority)
             if cmd_base in self.restricted_commands:
                 return False
         
-        # If no restricted commands found, allow it
-        # Note: allowed_commands is now optional - if not configured, all commands are allowed (except restricted)
+        # SECOND: If allowed_commands is configured and non-empty, check against it
+        # If allowed_commands is empty or not configured, allow all commands (except restricted)
         if self.allowed_commands:
-            # If allowed_commands is configured, still check it for backward compatibility
-            # But this is now more permissive
             for part in parts:
                 part = part.strip()
                 if not part:
@@ -104,6 +101,9 @@ class ShellTool(Tool):
                 if cmd_base not in self.allowed_commands:
                     return False
         
+        # If we get here, command is allowed:
+        # - Not in restricted_commands
+        # - Either allowed_commands is empty/not configured, OR command is in allowed_commands
         return True
 
     async def execute(self, operation: str, arguments: dict[str, Any]) -> ToolResult:
@@ -152,84 +152,58 @@ class ShellTool(Tool):
         # This is documented in the contract and enforced at planning time.
 
         try:
-            import subprocess
             import asyncio
-            import shlex
             
             if not command or not command.strip():
                 return ToolResult(
                     success=False, output=None, error="Empty command"
                 )
             
-            # Get working directory from arguments if provided
-            cwd = arguments.get("cwd")
-            if cwd:
-                from pathlib import Path
-                cwd = Path(cwd).expanduser().resolve()
-                # Validate cwd is in allowed paths (if filesystem tool restrictions apply)
-                # For now, just use it if provided
-            
             # Get timeout from arguments (default: 30 seconds)
             timeout = arguments.get("timeout", 30)
             
-            # Check if command contains shell operators (&&, ||, |, ;, etc.)
-            # If so, execute via shell, otherwise execute directly
-            shell_operators = ["&&", "||", "|", ";", ">", ">>", "<", "<<"]
-            use_shell = any(op in command for op in shell_operators)
-            
-            if use_shell:
-                # Execute via shell to support operators
-                process = await asyncio.create_subprocess_shell(
-                    command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=str(cwd) if cwd else None,
-                )
-            else:
-                # Parse command and arguments for direct execution
-                cmd_parts = shlex.split(command)
-                if not cmd_parts:
-                    return ToolResult(
-                        success=False, output=None, error="Empty command"
-                    )
-                
-                # Execute command directly
-                process = await asyncio.create_subprocess_exec(
-                    *cmd_parts,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=str(cwd) if cwd else None,
-                )
-            
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout=timeout
-                )
-            except asyncio.TimeoutError:
-                process.kill()
-                await process.wait()
+            # session_id is mandatory - always execute in tmux
+            session_id = arguments.get("_session_id")
+            if not session_id:
                 return ToolResult(
                     success=False,
                     output=None,
-                    error=f"Command timed out after {timeout} seconds",
+                    error="Missing required argument: '_session_id'. Session ID is mandatory.",
                 )
             
-            # Decode output
-            stdout_text = stdout.decode("utf-8", errors="replace") if stdout else ""
-            stderr_text = stderr.decode("utf-8", errors="replace") if stderr else ""
+            # Execute command in tmux session (tmux is mandatory)
+            from agent.tools.tmux import get_tmux_manager
+            from agent.storage.sqlite import SQLiteStorage
             
-            # Command succeeded if return code is 0
-            success = process.returncode == 0
+            tmux_manager = get_tmux_manager()
+            storage = SQLiteStorage("forge_agent.db")
             
+            # Get tmux session (mandatory)
+            tmux_session = await storage.get_tmux_session(session_id)
+            if not tmux_session:
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error=f"Tmux session not found for session {session_id}",
+                )
+            
+            # Execute command in tmux session
+            return_code, stdout_text, stderr_text = await tmux_manager.execute_command(
+                tmux_session,
+                command,
+                timeout=timeout,
+            )
+            
+            success = return_code == 0
             output = {
                 "stdout": stdout_text,
                 "stderr": stderr_text,
-                "return_code": process.returncode,
+                "return_code": return_code,
                 "command": command,
             }
             
             if not success:
-                error_msg = stderr_text or f"Command failed with return code {process.returncode}"
+                error_msg = stderr_text or f"Command failed with return code {return_code}"
                 return ToolResult(success=False, output=output, error=error_msg)
             
             return ToolResult(success=True, output=output)

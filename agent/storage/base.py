@@ -122,6 +122,21 @@ class Storage(ABC):
         """
         pass
 
+    @abstractmethod
+    async def get_tmux_session(self, session_id: str) -> str | None:
+        """Get tmux session name for an agent session.
+        
+        Args:
+            session_id: Agent session ID
+            
+        Returns:
+            Tmux session name or None if not found
+            
+        Raises:
+            NotFoundError: If session not found
+        """
+        pass
+
 
 class StorageError(Exception):
     """Base exception for storage operations."""

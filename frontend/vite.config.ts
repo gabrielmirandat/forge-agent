@@ -18,12 +18,36 @@ export default defineConfig({
         secure: false, // Allow self-signed certificates
         configure: (proxy, _options) => {
           proxy.on('error', (err, _req, _res) => {
-            // Ignore WebSocket connection errors (they're normal when client disconnects)
+            // Ignore common WebSocket/proxy errors that are normal
             const errMsg = String(err.message || err);
-            if (errMsg.indexOf('socket') !== -1) {
-              return;
+            const errCode = (err as any).code;
+            
+            // Ignore EPIPE, ECONNRESET, and other common socket errors
+            // These happen when clients disconnect or backend is not available
+            if (
+              errCode === 'EPIPE' ||
+              errCode === 'ECONNRESET' ||
+              errCode === 'ECONNREFUSED' ||
+              errMsg.indexOf('socket') !== -1 ||
+              errMsg.indexOf('EPIPE') !== -1 ||
+              errMsg.indexOf('ECONNRESET') !== -1
+            ) {
+              return; // Silently ignore
             }
-            console.log('Proxy error:', err);
+            
+            // Only log unexpected errors
+            console.error('Proxy error:', err);
+          });
+          
+          // Handle WebSocket upgrade errors
+          proxy.on('proxyReqWs', (proxyReq, req, socket) => {
+            socket.on('error', (err) => {
+              // Ignore socket errors during WebSocket upgrade
+              const errCode = (err as any).code;
+              if (errCode === 'EPIPE' || errCode === 'ECONNRESET') {
+                return;
+              }
+            });
           });
         },
       },
