@@ -8,7 +8,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Dict, Optional
 
-from agent.observability.context import get_request_id, get_run_id
+from agent.observability.context import get_request_id
 from agent.observability.logger import get_logger
 
 _tracer_logger = get_logger("tracer", "tracing")
@@ -30,9 +30,10 @@ class Span:
             parent_span_id: Parent span ID (None for root)
             attributes: Span attributes
         """
-        import uuid
+        from agent.id import ascending
 
-        self.span_id = str(uuid.uuid4())[:16]
+        # Use message prefix for span IDs (temporary, not persisted)
+        self.span_id = ascending("message")[:16]
         self.parent_span_id = parent_span_id
         self.name = name
         self.attributes = attributes or {}
@@ -62,7 +63,6 @@ class Span:
             ),
             "attributes": self.attributes,
             "request_id": get_request_id(),
-            "run_id": get_run_id(),
         }
 
 

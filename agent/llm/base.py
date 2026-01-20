@@ -1,25 +1,40 @@
 """Base LLM provider interface.
 
-The LLM is treated as an untrusted but useful reasoning component. It:
-- Never executes code
-- Never accesses the filesystem directly
-- Never performs network or system actions
-- Only returns structured text outputs
-
-The LLM is used exclusively by the Planner for reasoning and plan generation.
-It has no direct connection to tools or execution.
+Supports both text generation and function calling (tool calling) like OpenCode.
+The LLM can use tools directly via function calling, without requiring a planner.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Union
+from dataclasses import dataclass
+
+
+@dataclass
+class ToolCall:
+    """Represents a tool/function call from the LLM."""
+    
+    id: str
+    name: str
+    arguments: Dict[str, Any]
+
+
+@dataclass
+class LLMResponse:
+    """Response from LLM that may contain text and/or tool calls."""
+    
+    content: Optional[str] = None
+    tool_calls: List[ToolCall] = None
+    
+    def __post_init__(self):
+        if self.tool_calls is None:
+            self.tool_calls = []
 
 
 class LLMProvider(ABC):
     """Base class for LLM providers.
 
-    The LLM is a reasoning engine only. It never executes code, accesses the
-    filesystem, or performs system actions. It only returns structured text
-    outputs that are consumed by the Planner.
+    Supports both text generation and function calling (tool calling).
+    Like OpenCode, the LLM can use tools directly without requiring a planner.
     """
 
     def __init__(self, config: Dict[str, Any]):
@@ -34,29 +49,31 @@ class LLMProvider(ABC):
     async def generate(self, prompt: str, **kwargs: Any) -> str:
         """Generate text from prompt.
 
-        This method only returns text. It does NOT execute any actions.
-
         Args:
             prompt: Input prompt
             **kwargs: Additional generation parameters
 
         Returns:
-            Generated text (structured output for planning)
+            Generated text
         """
         pass
 
     @abstractmethod
-    async def chat(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
-        """Generate response from chat messages.
-
-        This method only returns text. It does NOT execute any actions.
+    async def chat(
+        self, 
+        messages: List[Dict[str, Any]], 
+        tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs: Any
+    ) -> Union[str, LLMResponse]:
+        """Generate response from chat messages with optional tool support.
 
         Args:
             messages: List of message dicts with 'role' and 'content'
+            tools: Optional list of tool definitions for function calling
             **kwargs: Additional generation parameters
 
         Returns:
-            Generated response (structured output for planning)
+            Generated response (str for text-only, LLMResponse for tool calls)
         """
         pass
 

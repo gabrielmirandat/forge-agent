@@ -11,10 +11,7 @@ import time
 from typing import Any, Dict, Optional
 
 from agent.observability.context import (
-    get_plan_id,
     get_request_id,
-    get_run_id,
-    get_step_id,
 )
 
 
@@ -23,21 +20,24 @@ class JSONFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         """Format log record as JSON."""
+        # Get component from record (set by log_event) or logger name
+        component = getattr(record, "component", None)
+        if component is None:
+            # Fallback: extract from logger name (e.g., "api.session" -> "api")
+            logger_name = record.name
+            if "." in logger_name:
+                component = logger_name.split(".")[0]
+            else:
+                component = logger_name
+        
         # Base fields (mandatory)
         log_data: Dict[str, Any] = {
             "timestamp": record.created,
             "level": record.levelname,
-            "request_id": get_request_id() or "unknown",
-            "run_id": get_run_id(),
-            "plan_id": get_plan_id(),
-            "component": getattr(record, "component", "unknown"),
+            "request_id": get_request_id() or None,
+            "component": component,
             "event": getattr(record, "event", record.getMessage()),
         }
-
-        # Optional fields
-        step_id = get_step_id()
-        if step_id is not None:
-            log_data["step_id"] = step_id
 
         # Add message if different from event
         if record.getMessage() != log_data["event"]:
@@ -47,33 +47,37 @@ class JSONFormatter(logging.Formatter):
         if record.exc_info:
             log_data["error"] = self.formatException(record.exc_info)
 
-        # Add any extra fields
+        # Add any extra fields from log_event() kwargs, but filter out internal Python fields
+        excluded_fields = {
+            "name",
+            "msg",
+            "args",
+            "created",
+            "filename",
+            "funcName",
+            "levelname",
+            "levelno",
+            "lineno",
+            "module",
+            "msecs",
+            "message",
+            "pathname",
+            "process",
+            "processName",
+            "relativeCreated",
+            "thread",
+            "threadName",
+            "exc_info",
+            "exc_text",
+            "stack_info",
+            "component",
+            "event",
+            "taskName",  # asyncio task name - not useful
+            "asctime",  # formatted time - redundant with timestamp
+        }
+        
         for key, value in record.__dict__.items():
-            if key not in (
-                "name",
-                "msg",
-                "args",
-                "created",
-                "filename",
-                "funcName",
-                "levelname",
-                "levelno",
-                "lineno",
-                "module",
-                "msecs",
-                "message",
-                "pathname",
-                "process",
-                "processName",
-                "relativeCreated",
-                "thread",
-                "threadName",
-                "exc_info",
-                "exc_text",
-                "stack_info",
-                "component",
-                "event",
-            ):
+            if key not in excluded_fields and not key.startswith("_"):
                 log_data[key] = value
 
         return json.dumps(log_data)
@@ -120,6 +124,12 @@ def log_event(
         level: Log level (INFO, ERROR, WARN)
         **kwargs: Additional event data
     """
+    # Get component from logger if available
+    component = getattr(logger, "component", None)
+    
     log_method = getattr(logger, level.lower(), logger.info)
-    log_method(event, extra={"event": event, **kwargs})
+    extra = {"event": event, **kwargs}
+    if component:
+        extra["component"] = component
+    log_method(event, extra=extra)
 

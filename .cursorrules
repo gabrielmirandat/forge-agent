@@ -1,0 +1,27 @@
+# Cursor Rules for Forge Agent
+
+## Language Rule
+- **All code, comments, documentation, and strings must be in English**
+- This includes:
+  - Code comments
+  - Documentation files (`.md`, `.rst`, etc.)
+  - Docstrings
+  - Variable names (use English)
+  - Function names (use English)
+  - Error messages
+  - Log messages
+  - User-facing strings
+  - Commit messages
+  - Code reviews
+
+## Code Style
+- Follow PEP 8 for Python code
+- Use type hints for all function signatures
+- Write clear, descriptive variable and function names
+- Add docstrings to all public functions and classes
+
+## Documentation
+- All documentation must be in English
+- Use clear, concise language
+- Include examples where helpful
+- Keep documentation up to date with code changes

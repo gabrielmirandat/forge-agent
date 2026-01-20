@@ -75,15 +75,15 @@ function MessageContent({ content }: { content: string }) {
   );
 }
 import {
-  approveOperations,
   createSession,
   deleteSession,
   getSession,
   listSessions,
-  rejectOperations,
   sendMessage,
 } from '../api/client';
+import { LLMProviderSelector } from '../components/LLMProviderSelector';
 import { ObservabilityPanel } from '../components/ObservabilityPanel';
+import { useEventStream, type Event } from '../hooks/useEventStream';
 import type {
   MessageResponse,
   SessionResponse,
@@ -96,7 +96,7 @@ export function ChatPage() {
   const [currentSession, setCurrentSession] = useState<SessionResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
-  const [approving, setApproving] = useState<string | null>(null);
+  // Removed approving state - no longer needed with direct tool calling
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -105,6 +105,97 @@ export function ChatPage() {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(false); // Start with auto-scroll disabled
+  
+  // Handle WebSocket events
+  const handleEvent = (event: Event) => {
+    console.log('Event received:', event);
+    
+    // Only process events for current session
+    if (event.properties.session_id && currentSession && event.properties.session_id !== currentSession.session_id) {
+      return;
+    }
+    
+    switch (event.type) {
+      case 'session.message.added':
+        // Reload session to get new message
+        if (currentSession) {
+          loadSession(currentSession.session_id).catch(console.error);
+        }
+        break;
+      
+      case 'session.updated':
+        // Reload session to get updates
+        if (currentSession) {
+          loadSession(currentSession.session_id).catch(console.error);
+        }
+        break;
+      
+      case 'execution.step.completed':
+        // Step completed - reload session to show progress
+        if (currentSession) {
+          loadSession(currentSession.session_id).catch(console.error);
+        }
+        break;
+      
+      case 'execution.completed':
+        // Execution completed - reload session to show final result
+        if (currentSession) {
+          loadSession(currentSession.session_id).catch(console.error);
+        }
+        break;
+      
+      case 'execution.failed':
+        // Execution failed - reload session to show error
+        if (currentSession) {
+          loadSession(currentSession.session_id).catch(console.error);
+        }
+        break;
+      
+      case 'planner.thinking':
+        // LLM is thinking - show raw response in console or UI
+        console.log('LLM thinking:', event.properties.raw_response);
+        // Optionally show in UI (you can add a "thinking" indicator)
+        break;
+      
+      case 'llm.reasoning':
+        // LLM is reasoning/thinking - show in console
+        console.log('LLM reasoning:', event.properties.status, event.properties.content || event.properties.message);
+        // Optionally show in UI
+        break;
+      
+      case 'tool.decision':
+        // Model decided to use or not use tools
+        console.log(`Tool decision: ${event.properties.decision}`, event.properties.reasoning);
+        if (event.properties.decision === 'use_tool') {
+          console.log(`  → Will call ${event.properties.tool_calls_count} tool(s)`);
+        } else {
+          console.log(`  → Responding directly without tools`);
+        }
+        break;
+      
+      case 'tool.called':
+        // Tool is being called - show progress
+        console.log(`Calling tool: ${event.properties.tool}`, event.properties.arguments);
+        // Optionally show in UI
+        break;
+      
+      case 'tool.result':
+        // Tool result received - show progress
+        console.log(`Tool result: ${event.properties.tool}.${event.properties.operation} - ${event.properties.success ? 'success' : 'failed'}`);
+        // Reload session to show updated results
+        if (currentSession) {
+          loadSession(currentSession.session_id).catch(console.error);
+        }
+        break;
+      
+      default:
+        // Ignore other events
+        break;
+    }
+  };
+  
+  // Connect to WebSocket event stream (only when session is active)
+  useEventStream(handleEvent, !!currentSession);
 
   // Load sessions list
   const loadSessions = async () => {
@@ -174,8 +265,6 @@ export function ChatPage() {
       role: 'user',
       content: messageContent,
       created_at: Date.now() / 1000,
-      plan_result: null,
-      execution_result: null,
     };
 
     // When user sends a message, enable auto-scroll and scroll to bottom
@@ -198,11 +287,13 @@ export function ChatPage() {
     });
 
     try {
+      // Send message (non-blocking, returns immediately)
       await sendMessage(currentSession.session_id, messageContent);
       // When agent responds, disable auto-scroll so user can manually scroll
       shouldAutoScrollRef.current = false;
-      await loadSession(currentSession.session_id);
-      await loadSessions(); // Refresh list to update titles
+      // Don't load session here - events will come via SSE
+      // Only refresh session list to update titles
+      await loadSessions();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send message');
       // Remove optimistic message on error
@@ -268,49 +359,7 @@ export function ChatPage() {
     }
   };
 
-  // Handle approve operations
-  const handleApprove = async (messageId: string, stepIds: number[]) => {
-    if (!currentSession || approving) return;
-
-    setApproving(messageId);
-    setError(null);
-
-    try {
-      // Preserve scroll position
-      const wasAtBottom = shouldAutoScrollRef.current;
-      await approveOperations(currentSession.session_id, messageId, stepIds);
-      // Reload session to get updated messages
-      await loadSession(currentSession.session_id);
-      // Restore auto-scroll state
-      shouldAutoScrollRef.current = wasAtBottom;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to approve operations');
-    } finally {
-      setApproving(null);
-    }
-  };
-
-  // Handle reject operations
-  const handleReject = async (messageId: string, stepIds: number[]) => {
-    if (!currentSession || approving) return;
-
-    setApproving(messageId);
-    setError(null);
-
-    try {
-      // Preserve scroll position
-      const wasAtBottom = shouldAutoScrollRef.current;
-      await rejectOperations(currentSession.session_id, messageId, stepIds);
-      // Reload session to get updated messages
-      await loadSession(currentSession.session_id);
-      // Restore auto-scroll state
-      shouldAutoScrollRef.current = wasAtBottom;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to reject operations');
-    } finally {
-      setApproving(null);
-    }
-  };
+  // Removed handleApprove and handleReject - no longer needed with direct tool calling
 
   // Handle delete session - show confirmation icons
   const handleDeleteClick = (sessionIdToDelete: string, e: React.MouseEvent) => {
@@ -446,34 +495,6 @@ export function ChatPage() {
               {confirmingDelete === session.session_id ? (
                 <div style={{ display: 'flex', gap: '0.25rem', alignItems: 'center' }}>
                   <button
-                    onClick={(e) => handleConfirmDelete(session.session_id, e)}
-                    disabled={deleting === session.session_id}
-                    style={{
-                      padding: '0',
-                      background: 'transparent',
-                      color: '#19c37d',
-                      border: 'none',
-                      cursor: deleting === session.session_id ? 'not-allowed' : 'pointer',
-                      fontSize: '1rem',
-                      flexShrink: 0,
-                      width: '20px',
-                      height: '20px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      opacity: deleting === session.session_id ? 0.5 : 1,
-                    }}
-                    title="Confirm delete"
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.color = '#1dd085';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.color = '#19c37d';
-                    }}
-                  >
-                    ✓
-                  </button>
-                  <button
                     onClick={handleCancelDelete}
                     disabled={deleting === session.session_id}
                     style={{
@@ -500,6 +521,34 @@ export function ChatPage() {
                     }}
                   >
                     ✕
+                  </button>
+                  <button
+                    onClick={(e) => handleConfirmDelete(session.session_id, e)}
+                    disabled={deleting === session.session_id}
+                    style={{
+                      padding: '0',
+                      background: 'transparent',
+                      color: '#19c37d',
+                      border: 'none',
+                      cursor: deleting === session.session_id ? 'not-allowed' : 'pointer',
+                      fontSize: '1rem',
+                      flexShrink: 0,
+                      width: '20px',
+                      height: '20px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      opacity: deleting === session.session_id ? 0.5 : 1,
+                    }}
+                    title="Confirm delete"
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.color = '#1dd085';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.color = '#19c37d';
+                    }}
+                  >
+                    ✓
                   </button>
                 </div>
               ) : (
@@ -534,6 +583,17 @@ export function ChatPage() {
               )}
             </div>
           ))}
+        </div>
+
+        {/* LLM Provider Selector - at the bottom */}
+        <div
+          style={{
+            borderTop: '1px solid #444',
+            padding: '1rem',
+            background: '#202123',
+          }}
+        >
+          <LLMProviderSelector />
         </div>
       </div>
 
@@ -652,97 +712,7 @@ export function ChatPage() {
                   >
                     <MessageContent content={message.content} />
                   </div>
-                  {message.plan_result && (
-                    <div
-                      style={{
-                        marginTop: '0.5rem',
-                        padding: '0.75rem',
-                        background: '#40414f',
-                        borderRadius: '6px',
-                        fontSize: '0.875rem',
-                      }}
-                    >
-                      <div style={{ marginBottom: '0.5rem' }}>
-                        <strong>Plan:</strong> {message.plan_result.plan.objective}
-                      </div>
-                      {message.plan_result.plan.steps.length > 0 && (
-                        <div style={{ marginTop: '0.5rem' }}>
-                          <strong>Steps:</strong>
-                          <div style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                            {message.plan_result.plan.steps.map((step) => {
-                              const requiresApproval = message.pending_approval_steps?.includes(step.step_id);
-                              const isRestricted = message.restricted_steps?.includes(step.step_id);
-                              return (
-                                <div
-                                  key={step.step_id}
-                                  style={{
-                                    padding: '0.5rem',
-                                    background: isRestricted ? '#4a1a1a' : requiresApproval ? '#7a1a1a' : '#2a2b2f',
-                                    borderRadius: '4px',
-                                    border: isRestricted ? '2px solid #ff0000' : requiresApproval ? '1px solid #ff4444' : '1px solid transparent',
-                                  }}
-                                >
-                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                    <div>
-                                      <strong>Step {step.step_id}:</strong> {step.tool}.{step.operation}
-                                      {isRestricted && (
-                                        <span style={{ marginLeft: '0.5rem', color: '#ff6666', fontWeight: 'bold' }}>🚫 RESTRICTED COMMAND</span>
-                                      )}
-                                      {requiresApproval && !isRestricted && (
-                                        <span style={{ marginLeft: '0.5rem', color: '#ff8888' }}>⚠️ Requires Approval</span>
-                                      )}
-                                    </div>
-                                  </div>
-                                  <div style={{ marginTop: '0.25rem', fontSize: '0.8rem', color: '#aaa' }}>
-                                    {step.rationale}
-                                  </div>
-                                  {isRestricted && (
-                                    <div style={{ marginTop: '0.5rem', padding: '0.5rem', background: '#2a0000', borderRadius: '4px', fontSize: '0.8rem', color: '#ffaaaa' }}>
-                                      ⚠️ <strong>WARNING:</strong> This command is restricted and may have dangerous side effects. Are you sure you want to proceed?
-                                    </div>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
-                      {message.pending_approval_steps && message.pending_approval_steps.length > 0 && (
-                        <div style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem' }}>
-                          <button
-                            onClick={() => handleApprove(message.message_id, message.pending_approval_steps!)}
-                            disabled={approving === message.message_id}
-                            style={{
-                              padding: '0.5rem 1rem',
-                              background: approving === message.message_id ? '#444' : '#19c37d',
-                              color: '#fff',
-                              border: 'none',
-                              borderRadius: '6px',
-                              cursor: approving === message.message_id ? 'not-allowed' : 'pointer',
-                              fontSize: '0.875rem',
-                            }}
-                          >
-                            {approving === message.message_id ? 'Approving...' : '✓ Approve'}
-                          </button>
-                          <button
-                            onClick={() => handleReject(message.message_id, message.pending_approval_steps!)}
-                            disabled={approving === message.message_id}
-                            style={{
-                              padding: '0.5rem 1rem',
-                              background: approving === message.message_id ? '#444' : '#dc3545',
-                              color: '#fff',
-                              border: 'none',
-                              borderRadius: '6px',
-                              cursor: approving === message.message_id ? 'not-allowed' : 'pointer',
-                              fontSize: '0.875rem',
-                            }}
-                          >
-                            {approving === message.message_id ? 'Rejecting...' : '✗ Reject'}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  {/* Removed plan_result display - no longer used with direct tool calling */}
                 </div>
               ))}
               <div ref={messagesEndRef} />

@@ -3,7 +3,7 @@
 import pytest
 
 from agent.tools.base import Tool, ToolRegistry, ToolResult
-from agent.runtime.schema import ToolNotFoundError
+from agent.runtime.exceptions import ToolNotFoundError
 
 
 class MockTool(Tool):

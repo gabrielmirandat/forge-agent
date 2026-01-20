@@ -1,0 +1,98 @@
+agent:
+  name: forge-agent
+  version: 0.1.0
+  
+  workspace:
+    base_path: ~/repos
+    persistent: true
+    cleanup_on_exit: false
+  
+  llm:
+    provider: ollama
+    base_url: http://localhost:11434
+    # Llama 3.1 - Latest Llama model with excellent tool-calling support
+    # ✅ TESTED: Works correctly with MCP tools via langchain-mcp-adapters
+    model: llama3.1
+    temperature: 0.1
+    max_tokens: 4096
+    timeout: 300
+  
+  runtime:
+    max_iterations: 50
+    timeout_seconds: 3600
+    enable_parallel_tools: true
+    safety_checks: true
+    auto_execution: true
+    continuous_loop: true
+  
+  logging:
+    level: INFO
+    format: json
+    output_path: ./workspace/logs
+  
+  human_in_the_loop:
+    enabled: false
+  
+  mcp:
+    desktop_commander:
+      type: docker
+      enabled: true
+      image: "mcp/desktop-commander:latest"
+      volumes:
+        - "{{workspace.base_path}}:/workspace"
+      args: []
+      timeout: 5000
+    
+    playwright:
+      type: docker
+      enabled: true
+      image: "mcp/playwright:latest"
+      volumes: []
+      args: []
+      timeout: 5000
+    
+    openapi:
+      type: docker
+      enabled: true
+      image: "mcp/openapi:latest"
+      volumes: []
+      args: []
+      timeout: 5000
+    
+    python_refactoring:
+      type: docker
+      enabled: true
+      image: "mcp/mcp-python-refactoring:latest"
+      volumes:
+        - "{{workspace.base_path}}:/workspace"
+      args: []
+      timeout: 5000
+    
+    git:
+      type: docker
+      enabled: true
+      image: "mcp/git:latest"
+      volumes:
+        - "{{workspace.base_path}}:/workspace"
+      args: []
+      timeout: 5000
+      environment:
+        GITHUB_TOKEN: "{{env:GITHUB_TOKEN}}"
+    
+    github:
+      type: docker
+      enabled: false
+      image: "mcp/github:latest"
+      volumes: []
+      args: []
+      timeout: 5000
+      environment:
+        GITHUB_PERSONAL_ACCESS_TOKEN: "{{env:GITHUB_PERSONAL_ACCESS_TOKEN}}"
+    
+    fetch:
+      type: docker
+      enabled: true
+      image: "mcp/fetch:latest"
+      volumes: []
+      args: []
+      timeout: 5000

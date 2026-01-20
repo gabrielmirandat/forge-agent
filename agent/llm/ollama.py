@@ -5,11 +5,11 @@ Optimized for qwen2.5-coder:7b with low temperature for deterministic planning.
 """
 
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Union
 
 import httpx
 
-from agent.llm.base import LLMProvider
+from agent.llm.base import LLMProvider, LLMResponse, ToolCall
 
 
 class OllamaProvider(LLMProvider):
@@ -48,7 +48,12 @@ class OllamaProvider(LLMProvider):
         messages = [{"role": "user", "content": prompt}]
         return await self.chat(messages, **kwargs)
 
-    async def chat(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+    async def chat(
+        self, 
+        messages: List[Dict[str, Any]], 
+        tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs: Any
+    ) -> Union[str, LLMResponse]:
         """Generate response from chat messages.
 
         Args:
@@ -80,7 +85,23 @@ class OllamaProvider(LLMProvider):
                 "temperature": temperature,
                 "num_predict": max_tokens,
             },
+            # Set keep_alive to 0 to free memory immediately after request
+            # This helps prevent memory buildup
+            "keep_alive": "0",
         }
+        
+        # Add tools if provided (Ollama supports function calling)
+        # Ollama expects tools in OpenAI-compatible format
+        if tools:
+            payload["tools"] = tools
+            import logging
+            debug_logger = logging.getLogger("ollama.debug")
+            debug_logger.info(
+                f"Sending {len(tools)} tools to Ollama: {[t.get('function', {}).get('name', 'unknown') for t in tools]}"
+            )
+            # Log first tool structure for debugging
+            if tools and debug_logger.isEnabledFor(logging.DEBUG):
+                debug_logger.debug(f"First tool structure: {json.dumps(tools[0], indent=2)}")
 
         # Make request
         import time
@@ -103,9 +124,75 @@ class OllamaProvider(LLMProvider):
 
                 data = response.json()
 
-                # Extract message content
-                if "message" in data and "content" in data["message"]:
-                    content = data["message"]["content"]
+                # Extract message content and tool calls
+                message = data.get("message", {})
+
+                # Debug: log full response structure
+                import logging
+                debug_logger = logging.getLogger("ollama.debug")
+                debug_logger.info(
+                    f"Ollama response keys: {list(data.keys())}, "
+                    f"message keys: {list(message.keys())}, "
+                    f"has tools in payload: {bool(tools)}, "
+                    f"message content length: {len(message.get('content', ''))}"
+                )
+                # Log full message structure for debugging
+                if debug_logger.isEnabledFor(logging.DEBUG):
+                    debug_logger.debug(f"Full message structure: {json.dumps(message, indent=2)}")
+                content = message.get("content", "")
+                tool_calls = []
+                
+                # Check for tool calls in Ollama response
+                # According to Ollama docs: tool_calls is a list with format:
+                # {"type": "function", "function": {"index": 0, "name": "...", "arguments": {...}}}
+                if "tool_calls" in message and message["tool_calls"]:
+                    debug_logger.debug(f"Found {len(message['tool_calls'])} tool calls in response")
+                    for idx, tc in enumerate(message["tool_calls"]):
+                        func = tc.get("function", {})
+                        # Arguments can be dict or string (JSON)
+                        args = func.get("arguments", {})
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except json.JSONDecodeError:
+                                args = {}
+                        
+                        # Use index from function if available, otherwise use our index
+                        tool_id = func.get("index", idx)
+                        tool_name = func.get("name", "")
+                        
+                        debug_logger.debug(
+                            f"Processing tool call {idx}: name={tool_name}, "
+                            f"index={tool_id}, args_keys={list(args.keys()) if isinstance(args, dict) else 'not_dict'}"
+                        )
+                        
+                        if tool_name:  # Only add if we have a valid name
+                            tool_calls.append(ToolCall(
+                                id=str(tool_id),  # Ollama uses index as ID
+                                name=tool_name,
+                                arguments=args
+                            ))
+                        else:
+                            debug_logger.warning(
+                                f"Tool call {idx} has no name! func={func}"
+                            )
+                
+                # If we have tool calls, return LLMResponse
+                if tool_calls:
+                    debug_logger.debug(f"Returning LLMResponse with {len(tool_calls)} tool calls")
+                    return LLMResponse(content=content, tool_calls=tool_calls)
+                
+                # Otherwise return text content
+                debug_logger.debug(f"Returning text response (length: {len(content) if content else 0})")
+                debug_logger.warning(
+                    f"No tool calls found in response. "
+                    f"Response type: text, "
+                    f"content length: {len(content) if content else 0}, "
+                    f"has tool_calls key: {'tool_calls' in message}, "
+                    f"message keys: {list(message.keys())}, "
+                    f"tools were provided: {bool(tools)}"
+                )
+                if content:
                     
                     # Track usage metrics if session_id provided
                     if session_id:

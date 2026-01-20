@@ -4,12 +4,7 @@ Errors bubble up. No retries. No transformation.
 API is the single source of truth.
 */
 
-import type {
-  ExecuteRequest,
-  ExecuteResponse,
-  PlanRequest,
-  PlanResponse,
-} from '../types/api';
+// Removed PlanRequest, PlanResponse, ExecuteRequest, ExecuteResponse - no longer used
 
 const API_BASE = '/api/v1';
 
@@ -42,45 +37,7 @@ async function fetchJson<T>(
   return response.json();
 }
 
-export async function plan(
-  goal: string,
-  context?: Record<string, unknown>
-): Promise<PlanResponse> {
-  const request: PlanRequest = {
-    goal,
-    ...(context && { context }),
-  };
-
-  return fetchJson<PlanResponse>(`${API_BASE}/plan`, {
-    method: 'POST',
-    body: JSON.stringify(request),
-  });
-}
-
-export async function execute(
-  plan: import('../types/api').Plan,
-  executionPolicy?: {
-    max_retries_per_step?: number;
-    retry_delay_seconds?: number;
-    rollback_on_failure?: boolean;
-  }
-): Promise<ExecuteResponse> {
-  const request: ExecuteRequest = {
-    plan,
-    ...(executionPolicy && {
-      execution_policy: {
-        max_retries_per_step: executionPolicy.max_retries_per_step ?? 0,
-        retry_delay_seconds: executionPolicy.retry_delay_seconds ?? 0.0,
-        rollback_on_failure: executionPolicy.rollback_on_failure ?? false,
-      },
-    }),
-  };
-
-  return fetchJson<ExecuteResponse>(`${API_BASE}/execute`, {
-    method: 'POST',
-    body: JSON.stringify(request),
-  });
-}
+// Removed plan() and execute() functions - no longer used with direct tool calling
 
 // Session/chat API
 export async function createSession(
@@ -121,22 +78,10 @@ export async function deleteSession(
 
 export async function sendMessage(
   sessionId: string,
-  content: string,
-  executionPolicy?: {
-    max_retries_per_step?: number;
-    retry_delay_seconds?: number;
-    rollback_on_failure?: boolean;
-  }
+  content: string
 ): Promise<import('../types/api').MessageResponse> {
   const request: import('../types/api').MessageRequest = {
     content,
-    ...(executionPolicy && {
-      execution_policy: {
-        max_retries_per_step: executionPolicy.max_retries_per_step ?? 0,
-        retry_delay_seconds: executionPolicy.retry_delay_seconds ?? 0.0,
-        rollback_on_failure: executionPolicy.rollback_on_failure ?? false,
-      },
-    }),
   };
 
   return fetchJson<import('../types/api').MessageResponse>(
@@ -148,36 +93,64 @@ export async function sendMessage(
   );
 }
 
-export async function approveOperations(
-  sessionId: string,
-  messageId: string,
-  stepIds: number[],
-  reason?: string
-): Promise<{ message_id: string; execution_result: any }> {
-  const request = {
-    step_ids: stepIds,
-    ...(reason && { reason }),
-  };
+// Removed approveOperations and rejectOperations - no longer needed with direct tool calling
 
-  return fetchJson(`${API_BASE}/sessions/${sessionId}/messages/${messageId}/approve`, {
-    method: 'POST',
-    body: JSON.stringify(request),
+// Config API
+export async function getLLMConfig(): Promise<{
+  provider: string;
+  model: string;
+  temperature: number;
+  max_tokens: number;
+  timeout: number;
+  base_url?: string;
+  compression?: string;
+  profiling_mode?: boolean;
+}> {
+  return fetchJson(`${API_BASE}/config/llm`);
+}
+
+export async function listLLMProviders(): Promise<{
+  providers: Array<{
+    id: string;
+    name: string;
+    description: string;
+    config_file: string | null;
+    model?: string;
+    status?: string;  // ✅, ❌, or ⚠️
+    required_fields?: string[];
+    optional_fields?: string[];
+  }>;
+}> {
+  return fetchJson(`${API_BASE}/config/llm/providers`);
+}
+
+export async function updateLLMConfig(
+  config: {
+    provider: string;
+    model: string;
+    temperature?: number;
+    max_tokens?: number;
+    timeout?: number;
+    base_url?: string;
+    compression?: string;
+    profiling_mode?: boolean;
+  }
+): Promise<{ status: string; message: string; config: any }> {
+  return fetchJson(`${API_BASE}/config/llm`, {
+    method: 'PUT',
+    body: JSON.stringify(config),
   });
 }
 
-export async function rejectOperations(
-  sessionId: string,
-  messageId: string,
-  stepIds: number[],
-  reason?: string
-): Promise<{ status: string; message_id: string }> {
-  const request = {
-    step_ids: stepIds,
-    ...(reason && { reason }),
-  };
-
-  return fetchJson(`${API_BASE}/sessions/${sessionId}/messages/${messageId}/reject`, {
+export async function switchLLMProvider(
+  provider: string,
+  configFile?: string
+): Promise<{ status: string; message: string; config: any }> {
+  const params = new URLSearchParams({ provider });
+  if (configFile) {
+    params.append('config_file', configFile);
+  }
+  return fetchJson(`${API_BASE}/config/llm/switch?${params.toString()}`, {
     method: 'POST',
-    body: JSON.stringify(request),
   });
 }

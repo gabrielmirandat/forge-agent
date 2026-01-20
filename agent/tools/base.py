@@ -4,7 +4,9 @@ Tools are the execution layer of the system. They can only be invoked by the
 Executor component. The LLM and Planner have no direct access to tools.
 """
 
+import os
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
@@ -17,6 +19,19 @@ class ToolResult(BaseModel):
     output: Any
     error: Optional[str] = None
     metadata: Dict[str, Any] = {}
+
+
+@dataclass
+class ToolContext:
+    """Context passed to tools during execution."""
+
+    session_id: Optional[str] = None
+    extra: Optional[Dict[str, Any]] = None
+
+    def __post_init__(self):
+        """Initialize extra dict if None."""
+        if self.extra is None:
+            self.extra = {}
 
 
 class Tool(ABC):
@@ -49,7 +64,7 @@ class Tool(ABC):
         pass
 
     @abstractmethod
-    async def execute(self, operation: str, arguments: Dict[str, Any]) -> ToolResult:
+    async def execute(self, operation: str, arguments: Dict[str, Any], ctx: Optional[ToolContext] = None) -> ToolResult:
         """Execute tool operation.
 
         This method is called by the Executor component. Tools are never
@@ -58,6 +73,7 @@ class Tool(ABC):
         Args:
             operation: Operation name to execute
             arguments: Operation arguments as a dictionary
+            ctx: Optional tool context with session_id and extra data
 
         Returns:
             Tool execution result
@@ -143,7 +159,7 @@ class ToolRegistry:
         """
         tool = self._tools.get(name)
         if tool is None:
-            from agent.runtime.schema import ToolNotFoundError
+            from agent.runtime.exceptions import ToolNotFoundError
             raise ToolNotFoundError(name)
         return tool
 
@@ -180,4 +196,114 @@ class ToolRegistry:
             List of enabled tool names
         """
         return [name for name, tool in self._tools.items() if tool.enabled]
+    
+    async def get_langchain_tools(self, session_id: Optional[str] = None, config: Optional[Any] = None) -> List[Any]:
+        """Get all enabled tools as LangChain tools using langchain-mcp-adapters (official pattern).
+        
+        All tools come from MCP servers (Docker containers).
+        Uses MultiServerMCPClient from langchain-mcp-adapters to load tools directly from MCP servers.
+        Queries ALL configured MCP servers dynamically to ensure all tools are available.
+        
+        Args:
+            session_id: Optional session ID for tool context (not used for MCP tools)
+            config: AgentConfig to get MCP server configurations and workspace path
+            
+        Returns:
+            List of LangChain StructuredTool instances from MCP servers
+        """
+        from pathlib import Path
+        import logging
+
+        try:
+            from langchain_mcp_adapters.client import MultiServerMCPClient
+        except ImportError as exc:
+            raise ImportError(
+                "langchain-mcp-adapters is required for MCP tools. "
+                "Install it with: pip install langchain-mcp-adapters"
+            ) from exc
+
+        if config is None:
+            raise ValueError("AgentConfig 'config' is required to load MCP tools via adapters")
+
+        logger = logging.getLogger(__name__)
+
+        # Build MultiServerMCPClient configuration from config directly
+        # This ensures we query ALL configured servers, not just already-connected ones
+        mcp_configs: Dict[str, Dict[str, Any]] = {}
+        workspace_base = Path(config.workspace.base_path).expanduser().resolve()
+
+        # Get all MCP server configurations from config
+        all_mcp_configs = config.mcp or {}
+
+        # Build client config for each enabled MCP server
+        for server_name, mcp_config in all_mcp_configs.items():
+            # Skip disabled servers
+            if mcp_config.get("enabled") is False:
+                logger.debug(f"Skipping disabled MCP server: {server_name}")
+                continue
+
+            # Only handle Docker-type MCP servers (as in our config)
+            if mcp_config.get("type") == "docker":
+                image = mcp_config.get("image")
+                if not image:
+                    logger.warning(f"MCP server '{server_name}' has no image configured, skipping")
+                    continue
+
+                # Build docker command
+                docker_cmd: List[str] = ["docker", "run", "-i", "--rm"]
+
+                # Add volumes
+                volumes = mcp_config.get("volumes", [])
+                for volume in volumes:
+                    if "{{workspace.base_path}}" in volume:
+                        volume = volume.replace("{{workspace.base_path}}", str(workspace_base))
+                    if volume.startswith("~"):
+                        volume = str(Path(volume).expanduser())
+                    docker_cmd.extend(["-v", volume])
+
+                # Add environment variables
+                env_vars = mcp_config.get("environment", {})
+                resolved_env: Dict[str, str] = {}
+                for key, value in env_vars.items():
+                    if isinstance(value, str) and value.startswith("{{env:") and value.endswith("}}"):
+                        env_var_name = value[6:-2]
+                        resolved_env[key] = os.getenv(env_var_name, "") or ""
+                    else:
+                        resolved_env[key] = str(value)
+
+                for key, value in resolved_env.items():
+                    if value:
+                        docker_cmd.extend(["-e", f"{key}={value}"])
+
+                # Add image and args
+                docker_cmd.append(image)
+                docker_cmd.extend(mcp_config.get("args", []))
+
+                # Configure for MultiServerMCPClient
+                mcp_configs[server_name] = {
+                    "command": docker_cmd[0],
+                    "args": docker_cmd[1:],
+                    "transport": "stdio",
+                }
+                logger.debug(f"Configured MCP server '{server_name}' for tool loading")
+
+        if not mcp_configs:
+            logger.warning("No enabled MCP servers configured for langchain-mcp-adapters")
+            return []
+
+        logger.info(
+            f"Querying {len(mcp_configs)} MCP server(s) for tools: {list(mcp_configs.keys())}"
+        )
+
+        # Use MultiServerMCPClient (official pattern)
+        # This creates connections to all servers and queries tools dynamically
+        client = MultiServerMCPClient(mcp_configs)
+        tools = await client.get_tools()
+
+        logger.info(
+            f"Loaded {len(tools)} LangChain tools from {len(mcp_configs)} MCP server(s)",
+            extra={"servers": list(mcp_configs.keys()), "tools_count": len(tools)},
+        )
+
+        return tools
 

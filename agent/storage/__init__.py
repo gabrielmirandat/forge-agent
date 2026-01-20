@@ -2,20 +2,18 @@
 
 from agent.storage.base import NotFoundError, Storage, StorageError
 from agent.storage.models import (
-    ApprovalStatus,
     Message,
     MessageRole,
     Session,
     SessionSummary,
 )
-from agent.storage.sqlite import SQLiteStorage
+from agent.storage.json_storage import JSONStorage
 
 __all__ = [
     "Storage",
     "StorageError",
     "NotFoundError",
-    "ApprovalStatus",
-    "SQLiteStorage",
+    "JSONStorage",
     "Session",
     "SessionSummary",
     "Message",

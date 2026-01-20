@@ -3,23 +3,18 @@
 All dependencies are singleton-scoped and configured at startup.
 """
 
+import asyncio
 from functools import lru_cache
+from typing import Optional
 
 from fastapi import Depends
 
 from agent.config.loader import AgentConfig, ConfigLoader
-from agent.llm.airllm import AirLLMProvider
 from agent.llm.base import LLMProvider
 from agent.llm.ollama import OllamaProvider
-from agent.runtime.executor import Executor
-from agent.runtime.planner import Planner
-from agent.storage import SQLiteStorage, Storage
+from agent.storage import Storage
+from agent.storage.json_storage import JSONStorage
 from agent.tools.base import ToolRegistry
-from agent.tools.filesystem import FilesystemTool
-from agent.tools.git import GitTool
-from agent.tools.github import GitHubTool
-from agent.tools.shell import ShellTool
-from agent.tools.system import SystemTool
 
 
 _config_cache: AgentConfig | None = None
@@ -38,135 +33,189 @@ def get_config() -> AgentConfig:
     return _config_cache
 
 
+# Global LLM provider cache (can be cleared to force reload)
+_llm_provider_cache: Optional[LLMProvider] = None
+
+
 def get_llm_provider(config: AgentConfig = Depends(get_config)) -> LLMProvider:
-    """Get LLM provider (singleton).
+    """Get LLM provider (singleton, can be reloaded at runtime).
 
     Args:
         config: Agent configuration (injected)
 
     Returns:
-        LLMProvider instance (OllamaProvider, AirLLMProvider, or LocalAIProvider)
+        LLMProvider instance (OllamaProvider)
     """
-    provider_name = config.llm.provider.lower()
+    global _llm_provider_cache
     
-    # Convert LLMConfig to dict format expected by providers
-    llm_config_dict = {
-        "model": config.llm.model,
-        "temperature": config.llm.temperature,
-        "max_tokens": config.llm.max_tokens,
-        "timeout": config.llm.timeout,
-    }
+    # Check if we need to reload (cache cleared or config changed)
+    if _llm_provider_cache is None:
+        provider_name = config.llm.provider.lower()
+        
+        # Convert LLMConfig to dict format expected by providers
+        llm_config_dict = {
+            "model": config.llm.model,
+            "temperature": config.llm.temperature,
+            "max_tokens": config.llm.max_tokens,
+            "timeout": config.llm.timeout,
+        }
+        
+        # Only Ollama is supported
+        if provider_name != "ollama":
+            raise ValueError(
+                f"Unsupported LLM provider: {provider_name}. "
+                "Only 'ollama' is supported. "
+                "Configure provider: ollama in your config file."
+            )
+        
+        llm_config_dict["base_url"] = config.llm.base_url
+        _llm_provider_cache = OllamaProvider(llm_config_dict)
     
-    # Add provider-specific config
-    if provider_name == "ollama":
-        llm_config_dict["base_url"] = config.llm.base_url
-        return OllamaProvider(llm_config_dict)
-    elif provider_name == "airllm":
-        # AirLLM-specific config (from config.llm dict if present)
-        llm_config_raw = config.llm.model_dump()
-        if "compression" in llm_config_raw:
-            llm_config_dict["compression"] = llm_config_raw["compression"]
-        if "hf_token" in llm_config_raw:
-            llm_config_dict["hf_token"] = llm_config_raw["hf_token"]
-        if "profiling_mode" in llm_config_raw:
-            llm_config_dict["profiling_mode"] = llm_config_raw["profiling_mode"]
-        if "layer_shards_saving_path" in llm_config_raw:
-            llm_config_dict["layer_shards_saving_path"] = llm_config_raw["layer_shards_saving_path"]
-        if "delete_original" in llm_config_raw:
-            llm_config_dict["delete_original"] = llm_config_raw["delete_original"]
-        return AirLLMProvider(llm_config_dict)
-    elif provider_name == "localai":
-        llm_config_dict["base_url"] = config.llm.base_url
-        from agent.llm.localai import LocalAIProvider
-        return LocalAIProvider(llm_config_dict)
-    else:
-        raise ValueError(f"Unknown LLM provider: {provider_name}. Supported: ollama, airllm, localai")
+    return _llm_provider_cache
 
 
-def get_tool_registry(config: AgentConfig = Depends(get_config)) -> ToolRegistry:
-    """Get tool registry (singleton, configured at startup).
+# Global tool registry singleton
+_tool_registry: Optional[ToolRegistry] = None
+
+
+async def initialize_tool_registry(config: AgentConfig) -> ToolRegistry:
+    """Initialize tool registry (called at startup).
 
     Args:
-        config: Agent configuration (injected)
+        config: Agent configuration
 
     Returns:
         ToolRegistry with all tools registered
     """
+    global _tool_registry
+    
+    if _tool_registry is not None:
+        return _tool_registry
+    
     registry = ToolRegistry()
 
-    # Get tool configurations (with security settings)
-    tools_config = config.tools.model_dump()
-    workspace_config = config.workspace.model_dump()
+    # All tools come from MCP servers (Docker containers)
+    # Local tools have been removed - we use only MCP-standard tools
+    # MCP tools are registered as classes and converted to LangChain tools via adapter
+    await _register_mcp_tools(registry, config)
 
-    # Register all tools with their security configurations
-    # Merge workspace config with tool-specific config
-    filesystem_config = {**workspace_config, **tools_config.get("filesystem", {})}
-    # Git tool needs access to filesystem allowed_paths for path validation
-    git_config = {
-        **workspace_config,
-        **tools_config.get("git", {}),
-        "allowed_paths": filesystem_config.get("allowed_paths", []),
-        "restricted_paths": filesystem_config.get("restricted_paths", []),
-    }
-    github_config = {**workspace_config, **tools_config.get("github", {})}
-    shell_config = {**workspace_config, **tools_config.get("shell", {})}
-    # System tool needs access to full agent config for status info
-    system_config = {**workspace_config, **tools_config.get("system", {}), "_agent_config": config}
-
-    registry.register(FilesystemTool(filesystem_config))
-    registry.register(GitTool(git_config))
-    registry.register(GitHubTool(github_config))
-    registry.register(ShellTool(shell_config))
-    registry.register(SystemTool(system_config))
-
+    _tool_registry = registry
     return registry
 
 
-def get_planner(
-    config: AgentConfig = Depends(get_config),
-    llm_provider: LLMProvider = Depends(get_llm_provider),
-) -> Planner:
-    """Get planner instance.
-
-    Args:
-        config: Agent configuration (injected)
-        llm_provider: LLM provider (injected)
+def get_tool_registry() -> ToolRegistry:
+    """Get tool registry (singleton, must be initialized first).
 
     Returns:
-        Planner instance
+        ToolRegistry with all tools registered
+
+    Raises:
+        RuntimeError: If registry not initialized
     """
-    return Planner(config, llm_provider)
+    global _tool_registry
+    if _tool_registry is None:
+        raise RuntimeError("Tool registry not initialized. Call initialize_tool_registry() first.")
+    return _tool_registry
 
 
-def get_executor(
-    config: AgentConfig = Depends(get_config),
-    tool_registry: ToolRegistry = Depends(get_tool_registry),
-) -> Executor:
-    """Get executor instance.
+async def _register_mcp_tools(registry: ToolRegistry, config: AgentConfig):
+    """Register MCP server tools.
 
     Args:
-        config: Agent configuration (injected)
-        tool_registry: Tool registry (injected)
-
-    Returns:
-        Executor instance
+        registry: Tool registry
+        config: Agent configuration
     """
-    return Executor(config, tool_registry)
+    from agent.runtime.mcp_client import get_mcp_manager
+    from agent.tools.mcp_tool import MCPTool
+    from agent.observability import get_logger
 
+    logger = get_logger("mcp", "dependencies")
+    mcp_manager = get_mcp_manager()
+    mcp_configs = config.mcp or {}
+
+    for mcp_name, mcp_config in mcp_configs.items():
+        # Skip if disabled
+        if mcp_config.get("enabled") is False:
+            logger.info(f"MCP server {mcp_name} is disabled, skipping")
+            continue
+        
+        try:
+            # Skip Docker-type MCPs connection here - they are managed by DockerManager
+            # But we still need to register them for tool discovery
+            if mcp_config.get("type") == "docker":
+                logger.info(f"MCP server {mcp_name} is Docker-type, connection handled by DockerManager")
+                mcp_config_resolved = mcp_config.copy()
+                # Pass workspace_path to MCPClient for DockerManager to use
+                mcp_config_resolved["workspace_path"] = config.workspace.base_path
+            else:
+                # Resolve workspace path placeholder in command if present
+                mcp_config_resolved = mcp_config.copy()
+                if "command" in mcp_config_resolved:
+                    workspace_base = config.workspace.base_path if hasattr(config, "workspace") else "~/repos"
+                    from pathlib import Path
+                    workspace_base = str(Path(workspace_base).expanduser())
+                    
+                    resolved_command = []
+                    for arg in mcp_config_resolved["command"]:
+                        if isinstance(arg, str):
+                            # Replace workspace placeholder
+                            arg = arg.replace("{{workspace.base_path}}", workspace_base)
+                            # Expand user home directory
+                            if arg.startswith("~"):
+                                arg = str(Path(arg).expanduser())
+                        resolved_command.append(arg)
+                    mcp_config_resolved["command"] = resolved_command
+            
+            # Add MCP server with timeout to prevent blocking
+            success = await asyncio.wait_for(
+                mcp_manager.add_server(mcp_name, mcp_config_resolved),
+                timeout=10.0  # 10 second timeout per MCP
+            )
+            if not success:
+                logger.warning(f"Failed to register MCP server: {mcp_name}")
+                continue
+            
+            # Get tools from MCP server
+            tools = mcp_manager.get_all_tools().get(mcp_name, [])
+            
+            # Register each tool as a Forge Agent tool
+            for mcp_tool in tools:
+                tool_wrapper = MCPTool(
+                    mcp_name=mcp_name,
+                    mcp_tool=mcp_tool,
+                    config={"enabled": True},
+                )
+                registry.register(tool_wrapper)
+                
+            logger.info(f"MCP server '{mcp_name}' registered with {len(tools)} tools")
+            
+            # Log if desktop-commander MCP is enabled (provides file operations)
+            if mcp_name == "desktop_commander":
+                logger.info(
+                    "MCP desktop-commander server enabled. Provides file operations and terminal commands."
+                )
+        except asyncio.TimeoutError:
+            logger.warning(f"MCP server {mcp_name} connection timed out. Continuing without it.")
+            continue
+        except Exception as e:
+            logger.warning(f"Failed to register MCP server {mcp_name}: {e}. Continuing without it.")
+            continue
+
+
+# Removed get_planner and get_executor - no longer needed with direct tool calling
 
 _storage_cache: Storage | None = None
 
 
 def get_storage() -> Storage:
-    """Get storage instance (singleton, default: SQLite).
+    """Get storage instance (singleton, default: JSON).
 
     Returns:
         Storage instance
     """
     global _storage_cache
     if _storage_cache is None:
-        # Default to SQLite storage
-        # In future, this could be config-driven
-        _storage_cache = SQLiteStorage("forge_agent.db")
+        # Use JSON storage (like OpenCode)
+        _storage_cache = JSONStorage("~/.forge-agent/sessions")
     return _storage_cache
 

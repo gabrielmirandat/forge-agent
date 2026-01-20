@@ -20,19 +20,13 @@ class WorkspaceConfig(BaseModel):
 class LLMConfig(BaseModel):
     """LLM provider configuration."""
 
-    provider: str = Field(default="localai", description="LLM provider name (ollama, airllm, localai)")
-    base_url: str = Field(default="http://localhost:8080", description="LLM API base URL (for ollama/localai)")
+    provider: str = Field(default="ollama", description="LLM provider name (only 'ollama' is supported)")
+    base_url: str = Field(default="http://localhost:11434", description="Ollama API base URL")
     model: str = Field(default="gpt-3.5-turbo", description="Model name")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="Temperature")
     max_tokens: int = Field(default=4096, gt=0, description="Max tokens")
     timeout: int = Field(default=300, gt=0, description="Request timeout in seconds")
     
-    # AirLLM-specific optional fields
-    compression: str | None = Field(default=None, description="AirLLM compression: '4bit', '8bit', or None")
-    hf_token: str | None = Field(default=None, description="HuggingFace token for gated models")
-    profiling_mode: bool = Field(default=False, description="AirLLM profiling mode")
-    layer_shards_saving_path: str | None = Field(default=None, description="AirLLM layer shards path")
-    delete_original: bool = Field(default=False, description="AirLLM: delete original model after splitting")
     
     class Config:
         """Pydantic config to allow extra fields."""
@@ -52,49 +46,8 @@ class RuntimeConfig(BaseModel):
     timeout_seconds: int = Field(default=3600, gt=0, description="Total timeout")
     enable_parallel_tools: bool = Field(default=False, description="Enable parallel tool execution")
     safety_checks: bool = Field(default=True, description="Enable safety checks")
-
-
-class ToolsConfig(BaseModel):
-    """Tool security and configuration settings."""
-
-    filesystem: Dict[str, Any] = Field(
-        default_factory=lambda: {
-            "enabled": True,
-            "allowed_paths": ["~/repos"],
-            "restricted_paths": ["/", "/home", "/etc", "/usr", "/var", "/sys", "/proc"],
-        },
-        description="Filesystem tool configuration with security paths",
-    )
-    git: Dict[str, Any] = Field(
-        default_factory=lambda: {
-            "enabled": True,
-            "default_branch_prefix": "agent/",
-            "auto_commit": False,
-        },
-        description="Git tool configuration",
-    )
-    github: Dict[str, Any] = Field(
-        default_factory=lambda: {
-            "enabled": True,
-            "base_url": "https://api.github.com",
-            "auto_create_pr": False,
-        },
-        description="GitHub tool configuration",
-    )
-    shell: Dict[str, Any] = Field(
-        default_factory=lambda: {
-            "enabled": True,
-            "allowed_commands": ["git", "npm", "python", "python3", "docker", "docker-compose"],
-            "restricted_commands": ["rm", "sudo", "chmod", "chown", "mkfs", "fdisk", "dd", "mount", "umount"],
-        },
-        description="Shell tool configuration with security command restrictions",
-    )
-    system: Dict[str, Any] = Field(
-        default_factory=lambda: {
-            "enabled": True,
-        },
-        description="System tool configuration for read-only system introspection",
-    )
+    auto_execution: bool = Field(default=True, description="Enable automatic tool execution (OpenCode-style)")
+    continuous_loop: bool = Field(default=True, description="Enable continuous loop for auto-correction (OpenCode-style)")
 
 
 class LoggingConfig(BaseModel):
@@ -105,6 +58,29 @@ class LoggingConfig(BaseModel):
     output_path: str = Field(default="./workspace/logs", description="Log output path")
 
 
+class MCPConfig(BaseModel):
+    """MCP (Model Context Protocol) server configuration."""
+
+    type: str = Field(..., description="MCP server type: 'local', 'remote', or 'docker'")
+    enabled: bool = Field(default=True, description="Enable this MCP server")
+    timeout: int = Field(default=5000, description="Connection timeout in milliseconds")
+    
+    # Local server config
+    command: list[str] | None = Field(default=None, description="Command to run local MCP server")
+    environment: Dict[str, str] | None = Field(default=None, description="Environment variables for local server")
+    
+    # Remote server config
+    url: str | None = Field(default=None, description="URL for remote MCP server")
+    headers: Dict[str, str] | None = Field(default=None, description="HTTP headers for remote server")
+    oauth: bool | Dict[str, Any] = Field(default=True, description="OAuth configuration (True/False or config dict)")
+    
+    # Docker server config
+    image: str | None = Field(default=None, description="Docker image name for docker type")
+    volumes: list[str] | None = Field(default=None, description="Volume mounts for docker type")
+    args: list[str] | None = Field(default=None, description="Arguments for docker container")
+    environment: Dict[str, str] | None = Field(default=None, description="Environment variables for Docker container (e.g., GITHUB_TOKEN)")
+
+
 class AgentConfig(BaseModel):
     """Main agent configuration."""
 
@@ -113,12 +89,16 @@ class AgentConfig(BaseModel):
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
-    tools: ToolsConfig = Field(
-        default_factory=ToolsConfig, description="Tool security and configuration (CRITICAL for security)"
-    )
     logging: LoggingConfig = Field(default_factory=LoggingConfig, description="Logging settings")
     human_in_the_loop: HumanInTheLoopConfig = Field(
         default_factory=HumanInTheLoopConfig, description="Human-in-the-Loop configuration"
+    )
+    mcp: Dict[str, Dict[str, Any]] = Field(
+        default_factory=dict, description="MCP server configurations"
+    )
+    system_prompt_template: str | None = Field(
+        default=None,
+        description="System prompt template with placeholders: {workspace_base}, {tools_count}, {all_mcp_tools}"
     )
 
 
@@ -132,7 +112,17 @@ class ConfigLoader:
             config_path: Path to config file. If None, uses CONFIG_PATH env var or default.
         """
         if config_path is None:
-            config_path = os.getenv("CONFIG_PATH", "config/agent.yaml")
+            # Try to find a default config file
+            default_path = os.getenv("CONFIG_PATH")
+            if default_path:
+                config_path = default_path
+            else:
+                # Try agent.ollama.yaml first, then agent.yaml
+                config_dir = Path("config")
+                if (config_dir / "agent.ollama.yaml").exists():
+                    config_path = "config/agent.ollama.yaml"
+                else:
+                    config_path = "config/agent.yaml"
 
         self.config_path = Path(config_path).expanduser().resolve()
 
@@ -155,5 +145,11 @@ class ConfigLoader:
         if not raw_config or "agent" not in raw_config:
             raise ValueError("Invalid config: missing 'agent' section")
 
-        return AgentConfig(**raw_config["agent"])
+        agent_config = raw_config["agent"]
+        
+        # Ensure mcp is always a dict (not None) if present but empty
+        if "mcp" in agent_config and agent_config["mcp"] is None:
+            agent_config["mcp"] = {}
+        
+        return AgentConfig(**agent_config)
 

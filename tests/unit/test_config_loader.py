@@ -9,7 +9,6 @@ from agent.config.loader import (
     AgentConfig,
     ConfigLoader,
     LLMConfig,
-    ToolsConfig,
     WorkspaceConfig,
     RuntimeConfig,
     LoggingConfig,
@@ -131,7 +130,6 @@ class TestAgentConfig:
         assert config.version == "0.1.0"
         assert isinstance(config.workspace, WorkspaceConfig)
         assert isinstance(config.llm, LLMConfig)
-        assert isinstance(config.tools, ToolsConfig)
         assert isinstance(config.runtime, RuntimeConfig)
         assert isinstance(config.logging, LoggingConfig)
         assert isinstance(config.human_in_the_loop, HumanInTheLoopConfig)
@@ -174,24 +172,3 @@ class TestLLMConfig:
         # Invalid: too high
         with pytest.raises(Exception):  # pydantic validation
             LLMConfig(temperature=3.0)
-
-
-class TestToolsConfig:
-    """Test ToolsConfig model."""
-
-    def test_default_tools_config(self):
-        """Test default tools config."""
-        config = ToolsConfig()
-        assert config.filesystem["enabled"] is True
-        assert "allowed_paths" in config.filesystem
-        assert config.shell["enabled"] is True
-        assert "allowed_commands" in config.shell
-        assert config.system["enabled"] is True
-
-    def test_custom_tools_config(self):
-        """Test custom tools config."""
-        config = ToolsConfig(
-            filesystem={"enabled": False, "allowed_paths": ["/custom"]}
-        )
-        assert config.filesystem["enabled"] is False
-        assert config.filesystem["allowed_paths"] == ["/custom"]

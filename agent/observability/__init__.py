@@ -2,14 +2,8 @@
 
 from agent.observability.context import (
     clear_context,
-    get_plan_id,
     get_request_id,
-    get_run_id,
-    get_step_id,
-    set_plan_id,
     set_request_id,
-    set_run_id,
-    set_step_id,
 )
 from agent.observability.logger import get_logger, log_event
 from agent.observability.metrics import (
@@ -34,12 +28,6 @@ __all__ = [
     "log_event",
     "get_request_id",
     "set_request_id",
-    "get_run_id",
-    "set_run_id",
-    "get_plan_id",
-    "set_plan_id",
-    "get_step_id",
-    "set_step_id",
     "clear_context",
     "trace_span",
     "Span",

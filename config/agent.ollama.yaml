@@ -1,0 +1,154 @@
+agent:
+  name: forge-agent
+  version: 0.1.0
+  
+  workspace:
+    base_path: ~/repos
+    persistent: true
+    cleanup_on_exit: false
+  
+  llm:
+    provider: ollama
+    # base_url is automatically set to Docker container when using Docker
+    # If running Ollama locally (not Docker), set base_url: http://localhost:11434
+    base_url: http://localhost:11434
+    # Using llama3.1 model - latest Llama model with excellent tool-calling support
+    # ✅ TESTED: Works correctly with MCP tools via langchain-mcp-adapters
+    # For other tested models, use:
+    # - config/agent.ollama.llama31.yaml (llama3.1)
+    # - config/agent.ollama.qwen.yaml (qwen3:8b)
+    # Note: mistral does NOT work with tool calling (model limitation)
+    model: llama3.1
+    temperature: 0.1
+    max_tokens: 4096
+    timeout: 300
+  
+  runtime:
+    max_iterations: 50
+    timeout_seconds: 3600
+    enable_parallel_tools: true
+    safety_checks: true
+    auto_execution: true
+    continuous_loop: true
+  
+  logging:
+    level: INFO
+    format: json
+    output_path: ./workspace/logs
+  
+  human_in_the_loop:
+    enabled: false
+  
+  # System prompt template with placeholders:
+  # - {workspace_base}: Workspace base path
+  # - {tools}: MCP servers with tools (format: "tool : server_name - description - tool1, tool2, ...")
+  system_prompt_template: |
+    You are a helpful coding assistant with access to tools via function calling.
+    
+    Workspace: {workspace_base}
+    
+    Available tools:
+    {tools}
+    
+    IMPORTANT: You have access to tools via function calling. When the user asks questions that require information or actions (like "what directory am I in?", "list files", "read a file", "what's in this folder?", etc.), you MUST call the appropriate tool. Do not say you don't have access - use the tools!
+    
+    Examples:
+    - User: "Em que pasta estamos?" → Use desktop_commander tool to get current directory
+    - User: "list files" → Use desktop_commander tool to list files
+    - User: "read file X" → Use desktop_commander tool to read the file
+    
+    For simple conversational questions that don't require tools, answer directly.
+    
+    The tool schemas and parameters are provided to you automatically via function calling - use them when needed.
+  
+  mcp:
+    # MCP servers via Docker
+    # Docker containers are automatically managed on application startup
+    # Images are pulled if not available, containers are started/stopped as needed
+    # Each connection creates an ephemeral container using docker run -i --rm
+    
+    # Desktop Commander MCP server - replaces filesystem, provides file operations and terminal commands
+    # See: https://hub.docker.com/r/mcp/desktop-commander
+    # Provides: read_file, write_file, execute_command, search_files, etc.
+    desktop_commander:
+      type: docker
+      enabled: true
+      image: "mcp/desktop-commander:latest"
+      volumes:
+        - "{{workspace.base_path}}:/workspace"
+      args: []
+      timeout: 5000
+    
+    # Playwright MCP server - browser automation (navigate, click, screenshot, etc.)
+    # See: https://hub.docker.com/r/mcp/playwright
+    # No token required - runs browser automation locally
+    playwright:
+      type: docker
+      enabled: true
+      image: "mcp/playwright:latest"
+      volumes: []
+      args: []
+      timeout: 5000
+    
+    # OpenAPI MCP server - interact with OpenAPI/Swagger APIs
+    # See: https://hub.docker.com/r/mcp/openapi
+    openapi:
+      type: docker
+      enabled: true
+      image: "mcp/openapi:latest"
+      volumes: []
+      args: []
+      timeout: 5000
+    
+    # Python Refactoring MCP server - code refactoring and analysis
+    # See: https://hub.docker.com/r/mcp/mcp-python-refactoring
+    python_refactoring:
+      type: docker
+      enabled: true
+      image: "mcp/mcp-python-refactoring:latest"
+      volumes:
+        - "{{workspace.base_path}}:/workspace"
+      args: []
+      timeout: 5000
+    
+    # Git MCP server - Git operations (clone, commit, push, etc.)
+    # See: https://hub.docker.com/r/mcp/git
+    # Optional: GITHUB_TOKEN env var for private repos (set in .env file)
+    git:
+      type: docker
+      enabled: true
+      image: "mcp/git:latest"
+      volumes:
+        - "{{workspace.base_path}}:/workspace"
+      args: []
+      timeout: 5000
+      environment:
+        # GITHUB_TOKEN will be read from system environment if set
+        GITHUB_TOKEN: "{{env:GITHUB_TOKEN}}"
+      # Note: Set GITHUB_TOKEN in .env file if needed for private repos
+    
+    # GitHub MCP server - GitHub API operations (issues, PRs, code search)
+    # See: https://hub.docker.com/r/mcp/github
+    # REQUIRES: GITHUB_PERSONAL_ACCESS_TOKEN env var (set in .env file)
+    github:
+      type: docker
+      enabled: false  # Disabled by default - requires GITHUB_PERSONAL_ACCESS_TOKEN
+      image: "mcp/github:latest"
+      volumes: []
+      args: []
+      timeout: 5000
+      environment:
+        # GITHUB_PERSONAL_ACCESS_TOKEN will be read from system environment
+        GITHUB_PERSONAL_ACCESS_TOKEN: "{{env:GITHUB_PERSONAL_ACCESS_TOKEN}}"
+      # Note: Set GITHUB_PERSONAL_ACCESS_TOKEN in .env file to enable
+    
+    # Fetch MCP server - fetch URLs and convert to Markdown
+    # See: https://hub.docker.com/r/mcp/fetch
+    # No token required - simple web content extraction
+    fetch:
+      type: docker
+      enabled: true
+      image: "mcp/fetch:latest"
+      volumes: []
+      args: []
+      timeout: 5000

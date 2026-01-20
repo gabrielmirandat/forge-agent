@@ -23,8 +23,7 @@ A self-hosted, local-first autonomous code agent, inspired by Claude Code, but r
 - `python3-venv` package (for virtual environment)
 - LLM Provider (choose one):
   - **Ollama**: Docker and Docker Compose (recommended for easy setup)
-  - **AirLLM**: PyTorch and CUDA (for running large models on small GPUs)
-- NVIDIA GPU with 4GB+ VRAM (for AirLLM) or 12GB+ VRAM (for Ollama with large models)
+- NVIDIA GPU with 12GB+ VRAM (for Ollama with large models) - optional, can run CPU-only
 
 ### Install python3-venv (Ubuntu/Debian)
 
@@ -55,29 +54,6 @@ docker-compose up -d ollama
 docker exec phase1-ollama ollama pull qwen2.5-coder:7b
 ```
 
-#### Option 2: Using AirLLM (For Large Models on Small GPUs)
-
-AirLLM allows running models up to 70B on GPUs with as little as 4GB VRAM using layer-wise loading and optional compression.
-
-```bash
-# Install AirLLM dependencies (if not already installed)
-pip install airllm torch transformers bitsandbytes
-
-# Configure agent.yaml to use AirLLM
-# See config/agent.airllm.example.yaml for configuration options
-cp config/agent.airllm.example.yaml config/agent.yaml
-
-# Edit config/agent.yaml and set:
-#   provider: airllm
-#   model: Qwen/Qwen-7B  # or any HuggingFace model
-#   compression: 4bit    # Optional: speeds up inference 3x
-```
-
-**AirLLM Benefits:**
-- Run 70B models on 4GB GPUs
-- 3x speedup with 4bit/8bit compression (minimal accuracy loss)
-- Supports many models: Qwen, ChatGLM, Baichuan, Mistral, Llama, etc.
-- No API server needed - direct Python integration
 
 # Start backend API
 cd ../..

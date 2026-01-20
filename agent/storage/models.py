@@ -4,17 +4,9 @@ These models represent what is stored, separate from runtime schemas.
 """
 
 from enum import Enum
-from typing import List, Optional
+from typing import List
 
 from pydantic import BaseModel, Field
-
-
-class ApprovalStatus(str, Enum):
-    """Approval status for operations requiring approval."""
-
-    PENDING = "pending"
-    APPROVED = "approved"
-    REJECTED = "rejected"
 
 
 class MessageRole(str, Enum):
@@ -33,13 +25,6 @@ class Message(BaseModel):
     role: MessageRole = Field(..., description="Message role (user/assistant/system)")
     content: str = Field(..., description="Message content")
     created_at: float = Field(..., description="Unix timestamp when message was created")
-    # Optional fields for assistant messages
-    plan_result: Optional[dict] = Field(
-        default=None, description="Plan result if message triggered planning"
-    )
-    execution_result: Optional[dict] = Field(
-        default=None, description="Execution result if message triggered execution"
-    )
 
 
 class Session(BaseModel):

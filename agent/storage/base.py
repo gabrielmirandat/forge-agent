@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agent.storage.models import ApprovalStatus, Message, MessageRole, Session, SessionSummary
+    from agent.storage.models import Message, MessageRole, Session, SessionSummary
 
 
 class Storage(ABC):
@@ -58,8 +58,6 @@ class Storage(ABC):
         session_id: str,
         role: "MessageRole",
         content: str,
-        plan_result: dict | None = None,
-        execution_result: dict | None = None,
     ) -> "Message":
         """Add a message to a session.
 
@@ -67,8 +65,6 @@ class Storage(ABC):
             session_id: Session identifier
             role: Message role (user/assistant/system)
             content: Message content
-            plan_result: Optional plan result
-            execution_result: Optional execution result
 
         Returns:
             Created Message
@@ -122,20 +118,6 @@ class Storage(ABC):
         """
         pass
 
-    @abstractmethod
-    async def get_tmux_session(self, session_id: str) -> str | None:
-        """Get tmux session name for an agent session.
-        
-        Args:
-            session_id: Agent session ID
-            
-        Returns:
-            Tmux session name or None if not found
-            
-        Raises:
-            NotFoundError: If session not found
-        """
-        pass
 
 
 class StorageError(Exception):

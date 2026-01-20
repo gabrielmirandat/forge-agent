@@ -4,7 +4,7 @@ import json
 import logging
 import pytest
 
-from agent.observability.context import set_request_id, set_run_id, set_plan_id, clear_context
+from agent.observability.context import set_request_id, clear_context
 from agent.observability.logger import JSONFormatter, get_logger
 
 
@@ -37,8 +37,6 @@ class TestJSONFormatter:
     def test_format_with_context(self):
         """Test formatting with context variables."""
         set_request_id("req-123")
-        set_run_id("run-123")
-        set_plan_id("plan-123")
 
         try:
             formatter = JSONFormatter()
@@ -58,8 +56,6 @@ class TestJSONFormatter:
             data = json.loads(output)
 
             assert data["request_id"] == "req-123"
-            assert data["run_id"] == "run-123"
-            assert data["plan_id"] == "plan-123"
         finally:
             clear_context()
 

@@ -1,0 +1,78 @@
+# MCP Servers Configuration Example
+# Copy this to agent.yaml under the 'mcp' section
+
+# Official MCP Servers (open source)
+# See: https://github.com/modelcontextprotocol/servers
+
+# Git MCP Server (local)
+git:
+  type: local
+  enabled: true
+  command: ["npx", "-y", "@modelcontextprotocol/server-git"]
+  timeout: 5000
+
+# GitHub MCP Server (remote)
+github_mcp:
+  type: remote
+  enabled: true
+  url: "https://api.github.com/mcp"
+  timeout: 5000
+  oauth: true
+
+# HuggingFace MCP Server (local)
+huggingface:
+  type: local
+  enabled: true
+  command: ["npx", "-y", "@modelcontextprotocol/server-huggingface"]
+  environment:
+    HUGGINGFACE_API_KEY: "{env:HUGGINGFACE_API_KEY}"
+  timeout: 5000
+
+# Browser/Playwright MCP Server (local)
+browser:
+  type: local
+  enabled: true
+  command: ["npx", "-y", "@modelcontextprotocol/server-playwright"]
+  timeout: 10000
+
+# Docker MCP Server (local)
+docker:
+  type: local
+  enabled: true
+  command: ["npx", "-y", "@modelcontextprotocol/server-docker"]
+  timeout: 5000
+
+# PDF Reader MCP Server (local)
+pdfreader:
+  type: local
+  enabled: true
+  command: ["npx", "-y", "@modelcontextprotocol/server-pdf"]
+  timeout: 5000
+
+# PubMed MCP Server (local)
+pubmed:
+  type: local
+  enabled: true
+  command: ["npx", "-y", "@modelcontextprotocol/server-pubmed"]
+  timeout: 5000
+
+# OpenCV MCP Server (local) - if available
+opencv:
+  type: local
+  enabled: false  # Enable if server exists
+  command: ["npx", "-y", "@modelcontextprotocol/server-opencv"]
+  timeout: 5000
+
+# ROS MCP Server (local) - if available
+ros:
+  type: local
+  enabled: false  # Enable if server exists
+  command: ["npx", "-y", "@modelcontextprotocol/server-ros"]
+  timeout: 5000
+
+# Mobile MCP Server (local) - if available
+mobile:
+  type: local
+  enabled: false  # Enable if server exists
+  command: ["npx", "-y", "@modelcontextprotocol/server-mobile"]
+  timeout: 5000

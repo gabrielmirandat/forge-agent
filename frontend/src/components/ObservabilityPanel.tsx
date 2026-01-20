@@ -4,7 +4,7 @@ Displays:
 - Global metrics: CPU, memory, disk, network, GPU (system-wide)
 - Global LLM metrics: models used, total tokens, total calls, active sessions
 
-Uses WebSocket for real-time updates.
+Uses SSE for real-time updates.
 */
 
 import { useEffect, useRef, useState } from 'react';
@@ -59,48 +59,42 @@ interface ObservabilityData {
 export function ObservabilityPanel() {
   const [metrics, setMetrics] = useState<ObservabilityData | null>(null);
   const [connected, setConnected] = useState(false);
-  const wsRef = useRef<WebSocket | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const isConnectingRef = useRef(false);
   const maxReconnectAttempts = 10; // Maximum reconnect attempts before giving up
-  const baseReconnectDelay = 1000; // Start with 1 second delay
+  const baseReconnectDelay = 2000; // Start with 2 second delay
 
   useEffect(() => {
     const connect = () => {
       // Prevent multiple simultaneous connection attempts
-      if (isConnectingRef.current || (wsRef.current && wsRef.current.readyState === WebSocket.CONNECTING)) {
+      if (isConnectingRef.current || (eventSourceRef.current && eventSourceRef.current.readyState === EventSource.CONNECTING)) {
         return;
       }
 
       // Close existing connection if any
-      if (wsRef.current) {
+      if (eventSourceRef.current) {
         try {
-          wsRef.current.close();
+          eventSourceRef.current.close();
         } catch (e) {
           // Ignore errors when closing
         }
-        wsRef.current = null;
+        eventSourceRef.current = null;
       }
 
       isConnectingRef.current = true;
 
-      // Get WebSocket URL
-      // In development, Vite proxy should handle /api routes (configured in vite.config.ts)
-      // The proxy forwards /api/* to http://localhost:8000
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const host = window.location.host;
-      
-      // Use relative path - Vite proxy will forward WebSocket connections to backend
-      // Make sure vite.config.ts has ws: true in the proxy configuration
-      const wsUrl = `${protocol}//${host}/api/v1/ws/observability`;
+      // Get SSE URL
+      // Use relative path - Vite proxy will handle it
+      const sseUrl = '/api/v1/observability/metrics';
 
       try {
-        const ws = new WebSocket(wsUrl);
-        wsRef.current = ws;
+        const eventSource = new EventSource(sseUrl);
+        eventSourceRef.current = eventSource;
 
-        ws.onopen = () => {
-          console.log('Observability WebSocket connected');
+        eventSource.onopen = () => {
+          console.log('Observability SSE connected');
           setConnected(true);
           isConnectingRef.current = false;
           reconnectAttemptsRef.current = 0; // Reset reconnect attempts on successful connection
@@ -112,62 +106,60 @@ export function ObservabilityPanel() {
           }
         };
 
-        ws.onmessage = (event) => {
+        eventSource.onmessage = (event) => {
           try {
-            const data = JSON.parse(event.data);
-            setMetrics(data as ObservabilityData);
+            const parsed = JSON.parse(event.data);
+            
+            // Handle different event types
+            if (parsed.type === 'metrics' && parsed.data) {
+              setMetrics(parsed.data as ObservabilityData);
+            } else if (parsed.type === 'connection') {
+              console.log('Observability SSE connection established');
+            } else if (parsed.type === 'heartbeat') {
+              // Heartbeat received, connection is alive
+              setConnected(true);
+            } else if (parsed.type === 'error') {
+              console.error('Observability SSE error:', parsed.data);
+            }
           } catch (e) {
             console.error('Failed to parse metrics:', e);
           }
         };
 
-        ws.onerror = (error) => {
-          console.error('WebSocket error:', error);
+        eventSource.onerror = (error) => {
+          console.error('SSE error:', error);
           setConnected(false);
           isConnectingRef.current = false;
-        };
+          
+          // EventSource automatically reconnects, but we track attempts
+          if (eventSource.readyState === EventSource.CLOSED) {
+            // Connection closed - try to reconnect manually
+            if (reconnectAttemptsRef.current < maxReconnectAttempts) {
+              const delay = Math.min(
+                baseReconnectDelay * Math.pow(2, reconnectAttemptsRef.current),
+                10000 // Max 10 seconds
+              );
+              
+              reconnectAttemptsRef.current += 1;
+              console.log(`Attempting to reconnect in ${delay}ms (attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})`);
 
-        ws.onclose = (event) => {
-          console.log('Observability WebSocket disconnected', {
-            code: event.code,
-            reason: event.reason,
-            wasClean: event.wasClean,
-          });
-          setConnected(false);
-          isConnectingRef.current = false;
-          wsRef.current = null;
-
-          // Don't reconnect if it was a clean close (e.g., component unmounting)
-          if (event.wasClean && event.code === 1000) {
-            return;
-          }
-
-          // Exponential backoff: 1s, 2s, 4s, 8s, ... up to 10s max
-          if (reconnectAttemptsRef.current < maxReconnectAttempts) {
-            const delay = Math.min(
-              baseReconnectDelay * Math.pow(2, reconnectAttemptsRef.current),
-              10000 // Max 10 seconds
-            );
-            
-            reconnectAttemptsRef.current += 1;
-            console.log(`Attempting to reconnect in ${delay}ms (attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})`);
-
-            reconnectTimeoutRef.current = window.setTimeout(() => {
-              reconnectTimeoutRef.current = null;
-              connect();
-            }, delay);
-          } else {
-            console.warn('Max reconnect attempts reached. Stopping reconnection attempts.');
-            // Reset after a longer delay (30 seconds) to allow backend to restart
-            reconnectTimeoutRef.current = window.setTimeout(() => {
-              reconnectAttemptsRef.current = 0;
-              reconnectTimeoutRef.current = null;
-              connect();
-            }, 30000);
+              reconnectTimeoutRef.current = window.setTimeout(() => {
+                reconnectTimeoutRef.current = null;
+                connect();
+              }, delay);
+            } else {
+              console.warn('Max reconnect attempts reached. Stopping reconnection attempts.');
+              // Reset after a longer delay (30 seconds) to allow backend to restart
+              reconnectTimeoutRef.current = window.setTimeout(() => {
+                reconnectAttemptsRef.current = 0;
+                reconnectTimeoutRef.current = null;
+                connect();
+              }, 30000);
+            }
           }
         };
       } catch (error) {
-        console.error('Failed to create WebSocket:', error);
+        console.error('Failed to create EventSource:', error);
         setConnected(false);
         isConnectingRef.current = false;
         
@@ -191,13 +183,13 @@ export function ObservabilityPanel() {
 
     return () => {
       isConnectingRef.current = false;
-      if (wsRef.current) {
+      if (eventSourceRef.current) {
         try {
-          wsRef.current.close(1000, 'Component unmounting'); // Clean close
+          eventSourceRef.current.close();
         } catch (e) {
           // Ignore errors
         }
-        wsRef.current = null;
+        eventSourceRef.current = null;
       }
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
