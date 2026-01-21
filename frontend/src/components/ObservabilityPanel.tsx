@@ -52,6 +52,7 @@ interface ObservabilityData {
       models_used: string[];
       active_sessions: number;
       last_used_at?: number | null;
+      model_avg_response_times?: Record<string, number>;
     };
   };
 }
@@ -426,6 +427,16 @@ export function ObservabilityPanel() {
           {globalLLM.models_used.length > 0 && (
             <div style={{ fontSize: '0.8rem', color: '#aaa', marginBottom: '0.25rem' }}>
               Models: {globalLLM.models_used.join(', ')}
+            </div>
+          )}
+          {globalLLM.model_avg_response_times && Object.keys(globalLLM.model_avg_response_times).length > 0 && (
+            <div style={{ fontSize: '0.8rem', color: '#aaa', marginBottom: '0.25rem' }}>
+              Avg Response Time:
+              {Object.entries(globalLLM.model_avg_response_times).map(([model, avgTime]) => (
+                <div key={model} style={{ marginLeft: '0.5rem', fontSize: '0.75rem' }}>
+                  {model}: {avgTime.toFixed(2)}s
+                </div>
+              ))}
             </div>
           )}
           <div style={{ fontSize: '0.8rem', color: '#aaa' }}>

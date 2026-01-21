@@ -67,3 +67,4 @@ phase*/tests/.coverage
 phase*/tests/htmlcov/
 
 .docs/
+_helpers/

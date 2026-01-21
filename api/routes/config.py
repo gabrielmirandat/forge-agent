@@ -59,7 +59,6 @@ async def list_llm_providers() -> Dict[str, Any]:
     # Models that have been tested and verified to work with MCP tool calling
     # ✅ = Works correctly, ❌ = Does not work (model limitation)
     tested_models = {
-        "llama3.1": {"status": "✅", "description": "Latest Llama model with excellent tool-calling support"},
         "qwen3:8b": {"status": "✅", "description": "Qwen model with good tool-calling support"},
         # "mistral": {"status": "❌", "description": "Does not call tools (model limitation)"},  # Removed - not working
     }

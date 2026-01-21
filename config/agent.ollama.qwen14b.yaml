@@ -9,26 +9,17 @@ agent:
   
   llm:
     provider: ollama
-    # base_url is automatically set to Docker container when using Docker
-    # If running Ollama locally (not Docker), set base_url: http://localhost:11434
     base_url: http://localhost:11434
-    # Model selection for tool calling:
-    # According to Ollama docs (https://ollama.com/search?c=tools), these models support tools:
-    # - qwen3:8b (recommended) - Excellent tool-calling support, tested and working
-    # - qwen2.5:14b - Larger Qwen model (config: agent.ollama.qwen14b.yaml)
-    #   Note: Model name may vary - check with: ollama list
-    #   To download: ollama pull qwen2.5:14b
-    # - devstral (24b) - Best open source model for coding agents
-    # - granite4 (350m, 1b, 3b) - Improved tool-calling capabilities
-    # - command-r (35b) - Optimized for conversational interaction and tool calling
-    # Note: Not all models support tool calling - check https://ollama.com/search?c=tools
-    # Note: llama3.1 removed - tool calling does not work reliably with this model
-    # Note: Model names may vary - verify with: ollama list
-    # Using qwen3:8b as it's proven to work well with tool calling
-    model: qwen3:8b
+    # Qwen 14b model - Larger Qwen model with excellent tool-calling support
+    # ✅ Supports tool calling according to Ollama docs
+    # Note: Model name may vary - check available models with: ollama list
+    # Possible names: qwen3:14b, qwen2.5:14b, qwen:14b
+    # To download: ollama pull qwen2.5:14b (or check Ollama library for exact name)
+    model: qwen2.5:14b
     temperature: 0.1
     max_tokens: 4096
     timeout: 300
+    tool_choice: auto
   
   runtime:
     max_iterations: 50
@@ -98,8 +89,9 @@ agent:
       args: []
       timeout: 5000
     
-    # OpenAPI MCP server - interact with OpenAPI/Swagger APIs
+    # OpenAPI MCP server - OpenAPI/Swagger API operations
     # See: https://hub.docker.com/r/mcp/openapi
+    # No token required - works with any OpenAPI spec
     openapi:
       type: docker
       enabled: true
@@ -109,7 +101,7 @@ agent:
       args: []
       timeout: 5000
     
-    # Python Refactoring MCP server - code refactoring and analysis
+    # Python Refactoring MCP server - Python code refactoring tools
     # See: https://hub.docker.com/r/mcp/mcp-python-refactoring
     python_refactoring:
       type: docker
@@ -120,9 +112,8 @@ agent:
       args: []
       timeout: 5000
     
-    # Git MCP server - Git operations (clone, commit, push, etc.)
+    # Git MCP server - Git operations (status, commit, diff, etc.)
     # See: https://hub.docker.com/r/mcp/git
-    # Optional: GITHUB_TOKEN env var for private repos (set in .env file)
     git:
       type: docker
       enabled: true

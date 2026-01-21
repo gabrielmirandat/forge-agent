@@ -48,20 +48,40 @@ class InMemoryTokenStorage(TokenStorage):
 
 
 class MCPClient:
-    """MCP client wrapper for connecting to MCP servers."""
+    """MCP client wrapper for connecting to MCP servers.
+    
+    This client implements the Model Context Protocol (MCP) specification
+    to connect to MCP servers via stdio, SSE, or Streamable HTTP transports.
+    
+    According to MCP Python SDK documentation:
+    - Supports stdio transport for local servers
+    - Supports SSE and Streamable HTTP for remote servers
+    - Handles OAuth authentication when required
+    - Manages tool discovery and execution
+    
+    Reference: _helpers/python-sdk/README.md
+    """
 
     def __init__(
         self,
         name: str,
         config: Dict[str, Any],
         token_storage: Optional[TokenStorage] = None,
-    ):
+    ) -> None:
         """Initialize MCP client.
 
         Args:
-            name: MCP server name
-            config: MCP server configuration (type, command/url, etc.)
-            token_storage: Optional token storage for OAuth
+            name: MCP server name for identification and logging.
+            config: MCP server configuration dict containing:
+                - type: Transport type ("local", "remote", "docker")
+                - command: Command to run (for stdio/local)
+                - url: Server URL (for remote/HTTP)
+                - Other transport-specific settings
+            token_storage: Optional token storage for OAuth authentication.
+                If None, uses InMemoryTokenStorage.
+        
+        Raises:
+            ImportError: If MCP SDK is not available.
         """
         if not MCP_AVAILABLE:
             raise ImportError("MCP SDK not available. Install with: pip install mcp")
@@ -76,10 +96,18 @@ class MCPClient:
         self._status: str = "disconnected"
 
     async def connect(self) -> bool:
-        """Connect to MCP server.
+        """Connect to MCP server using the configured transport.
+        
+        This method establishes a connection to the MCP server based on the
+        transport type specified in the configuration. It handles initialization
+        and tool discovery automatically.
 
         Returns:
-            True if connected successfully, False otherwise
+            True if connected successfully and tools are available, False otherwise.
+        
+        Raises:
+            ValueError: If the MCP type is unknown or unsupported.
+            ConnectionError: If the connection fails.
         """
         try:
             mcp_type = self.config.get("type", "local")

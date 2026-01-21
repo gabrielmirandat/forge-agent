@@ -9,20 +9,32 @@ from agent.tools.base import Tool, ToolContext, ToolResult
 
 
 class MCPTool(Tool):
-    """Tool wrapper for MCP server tools."""
+    """Tool wrapper for MCP server tools.
+    
+    This class wraps MCP (Model Context Protocol) server tools to make them
+    compatible with the Forge Agent tool system. It handles tool execution
+    through the MCP client and converts MCP responses to ToolResult format.
+    
+    According to MCP Python SDK documentation, tools can return:
+    - TextContent: Plain text results
+    - Structured content: JSON-serializable data
+    - Error responses: Indicated by isError flag
+    
+    Reference: _helpers/python-sdk/README.md
+    """
 
     def __init__(
         self,
         mcp_name: str,
         mcp_tool: Any,  # types.Tool from MCP SDK
         config: Dict[str, Any],
-    ):
+    ) -> None:
         """Initialize MCP tool wrapper.
 
         Args:
-            mcp_name: Name of the MCP server
-            mcp_tool: MCP tool definition
-            config: Tool configuration
+            mcp_name: Name of the MCP server providing this tool.
+            mcp_tool: MCP tool definition from the MCP SDK (types.Tool).
+            config: Tool configuration dict containing enabled flag and other settings.
         """
         super().__init__(config)
         self.mcp_name = mcp_name
@@ -39,16 +51,26 @@ class MCPTool(Tool):
         """Return tool description."""
         return self.mcp_tool.description or f"MCP tool from {self.mcp_name}"
 
-    async def execute(self, operation: str, arguments: Dict[str, Any], ctx: ToolContext | None = None) -> ToolResult:
-        """Execute MCP tool.
+    async def execute(
+        self,
+        operation: str,
+        arguments: Dict[str, Any],
+        ctx: ToolContext | None = None
+    ) -> ToolResult:
+        """Execute MCP tool via the MCP client.
+        
+        This method calls the MCP server tool and converts the response
+        to a ToolResult. It handles both text and structured content,
+        as well as error responses.
 
         Args:
-            operation: Operation name (should match tool name)
-            arguments: Operation arguments
-            ctx: Optional tool context
+            operation: Operation name (should match tool name without server prefix).
+            arguments: Operation arguments as a dictionary.
+            ctx: Optional tool context (not currently used for MCP tools).
 
         Returns:
-            Tool execution result
+            ToolResult with success status, output data, and optional error message.
+            The output can be text, structured data, or a combination of both.
         """
         if not self.enabled:
             return ToolResult(success=False, output=None, error="MCP tool is disabled")

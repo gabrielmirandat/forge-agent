@@ -1,7 +1,7 @@
 """Integration test for LLM model switching.
 
 Tests the complete flow:
-1. Switch between different LLM models (llama3.1, qwen3:8b)
+1. Switch between different LLM models (qwen3:8b, qwen2.5:14b)
 2. Send "hey" message to each model after switching
 3. Ask about the model type to verify the switch worked correctly
 4. Verify responses indicate the correct model is being used
@@ -58,8 +58,8 @@ def tool_registry(test_workspace):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model_config_file,expected_model", [
-    ("agent.ollama.llama31.yaml", "llama3.1"),
     ("agent.ollama.qwen.yaml", "qwen3:8b"),
+    ("agent.ollama.qwen14b.yaml", "qwen2.5:14b"),
 ])
 async def test_llm_model_switching(model_config_file: str, expected_model: str, tool_registry: ToolRegistry, test_workspace: str):
     """Test switching to a specific LLM model and verifying it responds correctly.
@@ -128,11 +128,10 @@ async def test_llm_model_switching(model_config_file: str, expected_model: str, 
     assert len(response_model) > 0, f"Empty response from {expected_model} for model question"
     
     # Verify the response contains indicators of the correct model
-    # Llama models often mention "llama" or "meta"
     # Qwen models often mention "qwen" or "alibaba"
     model_indicators = {
-        "llama3.1": ["llama", "meta", "3.1", "llama3"],
         "qwen3:8b": ["qwen", "alibaba", "qwen3", "8b"],
+        "qwen2.5:14b": ["qwen", "alibaba", "qwen2.5", "14b"],
     }
     
     expected_indicators = model_indicators.get(expected_model, [])
@@ -163,13 +162,13 @@ async def test_llm_switching_sequence(tool_registry: ToolRegistry, test_workspac
     """Test switching between multiple models in sequence.
     
     This test:
-    1. Switches to llama3.1, sends "hey", asks about model
+    1. Switches to qwen3:8b, sends "hey", asks about model
     2. Switches to qwen3:8b, sends "hey", asks about model
     3. Verifies each switch worked correctly
     """
     models_to_test = [
-        ("agent.ollama.llama31.yaml", "llama3.1"),
         ("agent.ollama.qwen.yaml", "qwen3:8b"),
+        ("agent.ollama.qwen14b.yaml", "qwen2.5:14b"),
     ]
     
     responses = {}
@@ -220,14 +219,18 @@ async def test_llm_switching_sequence(tool_registry: ToolRegistry, test_workspac
         assert executor.config.llm.model == expected_model, \
             f"Executor should be using {expected_model}, got {executor.config.llm.model}"
     
-    # Verify we got responses from both models
-    assert len(responses) == 2, f"Expected responses from 2 models, got {len(responses)}"
-    assert "llama3.1" in responses, "Missing response from llama3.1"
-    assert "qwen3:8b" in responses, "Missing response from qwen3:8b"
+    # Verify we got responses from all models
+    assert len(responses) == len(models_to_test), f"Expected responses from {len(models_to_test)} models, got {len(responses)}"
+    for _, expected_model in models_to_test:
+        assert expected_model in responses, f"Missing response from {expected_model}"
     
     # Verify responses are different (models should respond differently)
     # Note: This is a soft check - models might give similar responses
-    if responses["llama3.1"] != responses["qwen3:8b"]:
-        print("✅ Models gave different responses, confirming they are different")
-    else:
-        print("⚠️ Models gave identical responses (may be coincidental)")
+    # llama3.1 removed - tool calling does not work reliably
+    # Now testing with qwen models only
+    if len(responses) > 1:
+        model_names = list(responses.keys())
+        if responses[model_names[0]] != responses[model_names[1]]:
+            print("✅ Models gave different responses, confirming they are different")
+        else:
+            print("⚠️ Models gave identical responses (may be coincidental)")

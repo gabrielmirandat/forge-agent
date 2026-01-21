@@ -123,9 +123,9 @@ class ReasoningCollector:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model_config,model_name", [
-    ("agent.ollama.yaml", "llama3.1"),
+    ("agent.ollama.yaml", "qwen3:8b"),
     ("agent.ollama.qwen.yaml", "qwen3:8b"),
-    ("agent.ollama.llama31.yaml", "llama3.1"),
+    ("agent.ollama.qwen14b.yaml", "qwen2.5:14b"),
 ])
 @pytest.mark.parametrize("prompt,expected_tool_pattern,description", [
     (

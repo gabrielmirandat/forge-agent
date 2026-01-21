@@ -47,7 +47,8 @@ agent:
       type: docker
       enabled: true
       image: "mcp/playwright:latest"
-      volumes: []
+      volumes:
+        - "{{workspace.base_path}}:/workspace"
       args: []
       timeout: 5000
     
@@ -55,7 +56,8 @@ agent:
       type: docker
       enabled: true
       image: "mcp/openapi:latest"
-      volumes: []
+      volumes:
+        - "{{workspace.base_path}}:/workspace"
       args: []
       timeout: 5000
     
@@ -83,7 +85,8 @@ agent:
       type: docker
       enabled: false
       image: "mcp/github:latest"
-      volumes: []
+      volumes:
+        - "{{workspace.base_path}}:/workspace"
       args: []
       timeout: 5000
       environment:
@@ -93,6 +96,7 @@ agent:
       type: docker
       enabled: true
       image: "mcp/fetch:latest"
-      volumes: []
+      volumes:
+        - "{{workspace.base_path}}:/workspace"
       args: []
       timeout: 5000

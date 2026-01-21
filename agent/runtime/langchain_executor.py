@@ -14,8 +14,9 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
-from langchain.agents import create_agent
+from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 # Memory modules removed - not available in LangChain 1.2.6
 # Will use manual message history management instead
 
@@ -29,13 +30,20 @@ from agent.tools.base import ToolRegistry
 class LangChainExecutor:
     """Executor using Tool-Calling agents with LangChain.
     
-    Uses LangChain's create_agent (LangChain 1.2.6+):
-    - create_agent creates a CompiledStateGraph that can invoke tools
-    - Agent graph manages the loop: model → tool calls → tool results → model
-    - LLM directly calls tools via function calling (native model support)
-    - More efficient than ReAct (no explicit Thought/Action/Observation loop)
-    - Better for production use
-    - Callbacks provide observability and error handling
+    Uses LangChain's create_agent (LangChain 1.2.6+) to create stateful agents
+    that can invoke tools via function calling. The agent graph manages the
+    execution loop: model → tool calls → tool results → model.
+    
+    This executor is more efficient than ReAct-style agents because:
+    - No explicit Thought/Action/Observation loop required
+    - Native tool calling support from the LLM
+    - Better suited for production use with proper state management
+    
+    Features:
+    - Automatic tool binding via bind_tools()
+    - State management with AgentState and MemorySaver checkpointer
+    - Callbacks for observability and error handling
+    - Manual message history management for context
     """
     
     def __init__(
@@ -45,17 +53,19 @@ class LangChainExecutor:
         session_id: Optional[str] = None,
         max_iterations: int = 50,
         buffer_window_size: int = 10,
-    ):
+    ) -> None:
         """Initialize Tool-Calling agent executor.
         
         All LLM providers and tools are loaded/executed through LangChain.
+        The executor uses create_agent to build a stateful agent graph that
+        manages tool calling loops automatically.
         
         Args:
-            config: Agent configuration
-            tool_registry: Tool registry
-            session_id: Optional session ID
-            max_iterations: Maximum number of iterations (default: 50)
-            buffer_window_size: Number of recent messages to keep in buffer (default: 10)
+            config: Agent configuration containing LLM settings and runtime options.
+            tool_registry: Tool registry containing all available tools.
+            session_id: Optional session ID for tracking and state management.
+            max_iterations: Maximum number of agent iterations before stopping.
+            buffer_window_size: Number of recent messages to keep in context buffer.
         """
         self.config = config
         self.tool_registry = tool_registry
@@ -100,6 +110,10 @@ class LangChainExecutor:
         # The base_url should point to the Docker Ollama container (default: http://localhost:11434)
         # Reference: https://docs.ollama.com/capabilities/tool-calling#python
         # Ollama supports tool calling natively - LangChain's bind_tools() will convert tools to Ollama format
+        # IMPORTANT: Not all Ollama models support tool calling!
+        # Models that support tools: qwen3:8b, devstral, granite4, command-r, etc.
+        # Check: https://ollama.com/search?c=tools
+        # Note: llama3.1 removed - tool calling does not work reliably
         self.langchain_llm = ChatOllama(
             model=config.llm.model,
             base_url=config.llm.base_url or "http://localhost:11434",
@@ -117,14 +131,14 @@ class LangChainExecutor:
             f"base_url={config.llm.base_url or 'http://localhost:11434'}"
         )
         
-        # Tools and agent graph are loaded lazily in the async context (run/_ensure_agent_initialized)
+        # Tools and agent executor are loaded lazily in the async context (run/_ensure_agent_initialized)
         # This avoids trying to patch or manage the event loop (e.g., uvloop) in __init__,
         # which caused errors when running inside FastAPI/uvicorn.
         self.langchain_tools: List[Any] = []
         self.langchain_llm_with_tools = self.langchain_llm
-        self.system_prompt_template = None
-        self.agent_graph = None
-        self._checkpointer = None  # Store checkpointer for agent config
+        self.prompt_template: Optional[ChatPromptTemplate] = None
+        self.agent: Optional[Any] = None  # Agent created by create_tool_calling_agent
+        self.agent_executor: Optional[Any] = None  # AgentExecutor for running the agent
         
         # Memory management: manual message history
         # LangChain 1.2.6 does not provide ConversationBufferWindowMemory/ConversationSummaryMemory
@@ -133,7 +147,12 @@ class LangChainExecutor:
         self.buffer_window_size = buffer_window_size
         
         # Create error handling callback
-        self.callback_handler = ErrorHandlingCallbackHandler(session_id=session_id)
+        # Pass model name to callback for metrics tracking
+        model_name = config.llm.model if config.llm else None
+        self.callback_handler = ErrorHandlingCallbackHandler(
+            session_id=session_id,
+            model_name=model_name
+        )
         
         # Get LangSmith callbacks if tracing is enabled
         langsmith_callbacks = self._get_langsmith_callbacks()
@@ -144,12 +163,25 @@ class LangChainExecutor:
             self.all_callbacks.extend(langsmith_callbacks)
 
     async def _ensure_agent_initialized(self) -> None:
+        """Initialize the agent graph and bind tools to the model.
+        
+        This method is called lazily on first use to avoid event loop issues.
+        It performs the following steps:
+        1. Converts tools from registry to LangChain format
+        2. Binds tools to the LLM using bind_tools()
+        3. Builds the system prompt
+        4. Creates the agent graph using create_agent()
+        
+        Raises:
+            ImportError: If required LangChain modules are not available.
+            ValueError: If tool binding fails or agent creation fails.
+        """
         """Lazily load tools and create the LangChain agent graph in an async context.
         
         This method must be called from async code (e.g., run()) to avoid
         manipulating the event loop (uvloop) in __init__.
         """
-        if self.agent_graph is not None:
+        if self.agent_executor is not None:
             return
 
         # Load LangChain tools from MCP servers using langchain-mcp-adapters (official pattern)
@@ -181,8 +213,8 @@ class LangChainExecutor:
                 tool_choice = "auto"
             
             # Bind tools with optional tool_choice
-            # tool_choice can be: "auto", "required", or a specific tool name
-            bind_kwargs = {}
+            # According to LangChain tests, tool_choice can be: "auto", "required", "any", or a tool name
+            # Reference: _helpers/langchain/libs/standard-tests/langchain_tests/unit_tests/chat_models.py
             if tool_choice != "auto":
                 # Only add tool_choice if it's explicitly set (some models may not support it)
                 try:
@@ -226,23 +258,19 @@ class LangChainExecutor:
                     extra={"session_id": self.session_id},
                 )
         except Exception as e:
+            # Log error but continue without tool binding
+            # This allows the agent to work even if tool binding fails
+            # According to LangChain best practices, use msg variable for error messages
+            msg = f"bind_tools() failed: {str(e)}"
             self.logger.warning(
-                f"⚠️ bind_tools() failed ({e}), using model without bind_tools",
+                f"⚠️ {msg}, using model without bind_tools",
                 extra={"session_id": self.session_id},
                 exc_info=True,
             )
             self.langchain_llm_with_tools = self.langchain_llm
 
         # Build system prompt for the agent (needs langchain_tools to be set first)
-        self.system_prompt_template = await self._build_system_prompt()
-
-        # Format system prompt to string (create_agent expects string, not ChatPromptTemplate)
-        system_messages = self.system_prompt_template.format_messages()
-        system_prompt_str = ""
-        for msg in system_messages:
-            if hasattr(msg, "content"):
-                system_prompt_str += msg.content + "\n"
-        system_prompt_str = system_prompt_str.strip()
+        system_prompt_str = await self._format_system_prompt()
 
         self.logger.info(
             "System prompt built",
@@ -253,54 +281,76 @@ class LangChainExecutor:
             }
         )
 
-        # Create agent using LangChain 1.2.6+ API
-        # Based on langchain-mcp-adapters tests, create_agent should work correctly
-        # when model has tools bound and proper state schema is used
+        # Create ChatPromptTemplate for create_tool_calling_agent
+        # According to LangChain documentation, the prompt must have:
+        # - "agent_scratchpad" as MessagesPlaceholder (required)
+        # - "chat_history" as MessagesPlaceholder (optional, for conversation history)
+        # - "input" for user input
+        # Reference: _helpers/langchain/libs/langchain/langchain_classic/agents/tool_calling_agent/base.py
+        self.prompt_template = ChatPromptTemplate.from_messages([
+            ("system", system_prompt_str),
+            MessagesPlaceholder("chat_history", optional=True),
+            ("human", "{input}"),
+            MessagesPlaceholder("agent_scratchpad"),
+        ])
+
+        # Create agent using create_tool_calling_agent
+        # According to LangChain documentation:
+        # - llm: LLM with tools bound via bind_tools() (already done above)
+        # - tools: List of tools for the agent to execute
+        # - prompt: ChatPromptTemplate with agent_scratchpad MessagesPlaceholder
+        # Reference: _helpers/langchain/libs/langchain/langchain_classic/agents/tool_calling_agent/base.py
         try:
-            # Try to use create_agent with state_schema and checkpointer (recommended pattern)
-            from langchain.agents import AgentState
-            from langgraph.checkpoint.memory import MemorySaver
-            
-            # Create checkpointer for state management
-            self._checkpointer = MemorySaver()
-            
-            # Create agent with state schema and checkpointer
-            # Based on LangChain docs: https://docs.langchain.com/oss/python/langchain/models#example-nested-structures
-            # When using bind_tools(), the model automatically receives tool schemas via function calling
-            # create_agent manages the tool calling loop: model → tool calls → tool results → model
-            self.agent_graph = create_agent(
-                model=self.langchain_llm_with_tools,  # Model with tools already bound via bind_tools()
-                tools=self.langchain_tools,  # Tools list (also passed for agent to execute)
-                system_prompt=system_prompt_str,
-                state_schema=AgentState,
-                checkpointer=self._checkpointer,
+            self.agent = create_tool_calling_agent(
+                llm=self.langchain_llm_with_tools,  # Model with tools already bound via bind_tools()
+                tools=self.langchain_tools,  # Tools list
+                prompt=self.prompt_template,  # ChatPromptTemplate with required placeholders
             )
             
             self.logger.info(
-                "✅ Agent created with state_schema and checkpointer",
+                "✅ Agent created with create_tool_calling_agent",
                 extra={"session_id": self.session_id}
             )
-        except (ImportError, TypeError) as e:
-            # Fallback to basic create_agent if state_schema/checkpointer not available
-            self.logger.debug(
-                f"State schema/checkpointer not available, using basic create_agent: {e}",
-                extra={"session_id": self.session_id}
+        except Exception as e:
+            # Log error and re-raise - this is a critical failure
+            msg = f"Failed to create tool calling agent: {str(e)}"
+            self.logger.error(
+                f"❌ {msg}",
+                extra={"session_id": self.session_id},
+                exc_info=True,
             )
-            self.agent_graph = create_agent(
-                model=self.langchain_llm_with_tools,
-                tools=self.langchain_tools,
-                system_prompt=system_prompt_str,
-            )
+            raise ValueError(msg) from e
         
-        # Log agent creation for debugging
-        self.logger.info(
-            f"✅ Agent graph created with {len(self.langchain_tools)} tools",
-            extra={
-                "session_id": self.session_id,
-                "tools_count": len(self.langchain_tools),
-                "model_type": type(self.langchain_llm_with_tools).__name__,
-            }
-        )
+        # Create AgentExecutor to run the agent
+        # AgentExecutor manages the tool calling loop and handles errors
+        # Reference: _helpers/langchain/libs/langchain/langchain_classic/agents/tool_calling_agent/base.py
+        try:
+            self.agent_executor = AgentExecutor(
+                agent=self.agent,
+                tools=self.langchain_tools,
+                verbose=True,  # Enable verbose logging for debugging
+                max_iterations=self.max_iterations,  # Limit iterations to prevent infinite loops
+                handle_parsing_errors=True,  # Handle tool call parsing errors gracefully
+            )
+            
+            self.logger.info(
+                f"✅ AgentExecutor created with {len(self.langchain_tools)} tools",
+                extra={
+                    "session_id": self.session_id,
+                    "tools_count": len(self.langchain_tools),
+                    "model_type": type(self.langchain_llm_with_tools).__name__,
+                    "max_iterations": self.max_iterations,
+                }
+            )
+        except Exception as e:
+            # Log error and re-raise - this is a critical failure
+            msg = f"Failed to create AgentExecutor: {str(e)}"
+            self.logger.error(
+                f"❌ {msg}",
+                extra={"session_id": self.session_id},
+                exc_info=True,
+            )
+            raise ValueError(msg) from e
     
     def _configure_langsmith(self):
         """Configure LangSmith tracing if enabled.
@@ -393,7 +443,10 @@ class LangChainExecutor:
             )
             return []
         except Exception as e:
-            self.logger.warning(f"Failed to initialize LangSmith tracer: {e}")
+            # Log error but continue without LangSmith tracing
+            # According to LangChain best practices, use msg variable for error messages
+            msg = f"Failed to initialize LangSmith tracer: {str(e)}"
+            self.logger.warning(msg)
             return []
     
     
@@ -525,28 +578,26 @@ The tool schemas and parameters are provided to you automatically - use them as 
         """
         return await self.format_system_prompt(self.config, self.langchain_tools)
     
-    async def _build_system_prompt(self):
-        """Build system prompt for the agent using ChatPromptTemplate.
+    async def _build_system_prompt(self) -> str:
+        """Build the system prompt string for the agent.
+        
+        Creates a system prompt string that includes:
+        - Instructions for the agent
+        - Available tools information
+        - Workspace context
         
         Returns:
-            ChatPromptTemplate instance
+            System prompt string
             
         Note: According to LangChain docs (https://docs.langchain.com/oss/python/langchain/models#example-nested-structures),
         when using bind_tools(), tool schemas are provided automatically via function calling.
         The LLM receives tool definitions automatically, so we focus the prompt on WHEN to use tools,
         not on listing all tool details.
         """
-        from langchain_core.prompts import ChatPromptTemplate
-        
         # Format the prompt using the same logic
         system_prompt_str = await self._format_system_prompt()
         
-        # Create ChatPromptTemplate from formatted string
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", system_prompt_str),
-        ])
-        
-        return prompt
+        return system_prompt_str
     
     def _load_memory_variables(self) -> Dict[str, Any]:
         """Load memory variables from message history.
@@ -640,26 +691,27 @@ The tool schemas and parameters are provided to you automatically - use them as 
             memory_vars = self._load_memory_variables()
             chat_history = memory_vars.get("chat_history", [])
             
-            # Build messages for agent with memory context
-            # Start with system prompt messages
-            system_messages = self.system_prompt_template.format_messages()
-            messages = list(system_messages)
-            
-            # Convert chat history to LangChain messages
+            # Convert chat history to LangChain messages for AgentExecutor
+            # AgentExecutor expects chat_history as a list of BaseMessage objects
+            langchain_chat_history = []
             for msg_dict in chat_history:
                 role = msg_dict.get("role", "")
                 content = msg_dict.get("content", "")
                 if role == "user":
-                    messages.append(HumanMessage(content=content))
+                    langchain_chat_history.append(HumanMessage(content=content))
                 elif role == "assistant":
-                    messages.append(AIMessage(content=content))
+                    langchain_chat_history.append(AIMessage(content=content))
             
-            # Add current user message
-            messages.append(HumanMessage(content=user_message))
+            # Build input for AgentExecutor
+            # AgentExecutor expects a dict with "input" and optionally "chat_history"
+            # Reference: _helpers/langchain/libs/langchain/langchain_classic/agents/tool_calling_agent/base.py
+            input_data: Dict[str, Any] = {
+                "input": user_message,
+            }
             
-            # Build input for agent graph
-            # For tool-calling agents, we pass messages directly
-            input_data = {"messages": messages}
+            # Add chat history if available
+            if langchain_chat_history:
+                input_data["chat_history"] = langchain_chat_history
             
             log_event(
                 self.logger,
@@ -678,102 +730,113 @@ The tool schemas and parameters are provided to you automatically - use them as 
                 extra={"session_id": self.session_id}
             )
             
-            # Log system prompt being used (extract from template)
-            system_messages_for_log = self.system_prompt_template.format_messages()
-            system_prompt_for_log = ""
-            for msg in system_messages_for_log:
-                if hasattr(msg, "content"):
-                    system_prompt_for_log += msg.content + "\n"
-            system_prompt_for_log = system_prompt_for_log.strip()
-            system_prompt_debug = system_prompt_for_log[:500] if system_prompt_for_log else "No system prompt"
-            self.logger.info(
-                f"System prompt (first 500 chars): {system_prompt_debug}",
-                extra={"session_id": self.session_id, "prompt_length": len(system_prompt_for_log)}
-            )
+            # Log system prompt being used
+            if self.prompt_template:
+                system_prompt_for_log = ""
+                try:
+                    # Extract system message from prompt template
+                    for msg_template in self.prompt_template.messages:
+                        if hasattr(msg_template, "prompt") and hasattr(msg_template.prompt, "template"):
+                            system_prompt_for_log = msg_template.prompt.template
+                            break
+                except Exception:
+                    pass
+                
+                system_prompt_debug = system_prompt_for_log[:500] if system_prompt_for_log else "No system prompt"
+                self.logger.info(
+                    f"System prompt (first 500 chars): {system_prompt_debug}",
+                    extra={"session_id": self.session_id, "prompt_length": len(system_prompt_for_log)}
+                )
             
-            # Use create_agent with proper configuration (based on langchain-mcp-adapters tests)
-            # The agent graph manages the tool calling loop automatically
+            # Use AgentExecutor to run the agent
+            # AgentExecutor manages the tool calling loop automatically
+            # Reference: _helpers/langchain/libs/langchain/langchain_classic/agents/tool_calling_agent/base.py
             final_output = None
             accumulated_content = ""
             
-            # Prepare config for agent invocation
-            # If using checkpointer, we need to provide thread_id
-            agent_config = {"callbacks": self.all_callbacks}
-            try:
-                from langchain.agents import AgentState
-                from langgraph.checkpoint.memory import MemorySaver
-                # If checkpointer is used, add thread_id to config
-                if hasattr(self, '_checkpointer') and self._checkpointer:
-                    agent_config["configurable"] = {"thread_id": self.session_id or "default"}
-            except ImportError:
-                pass
+            # Prepare config for agent invocation (callbacks for observability)
+            agent_config: Dict[str, Any] = {"callbacks": self.all_callbacks}
             
-            # Try astream_events first for observability, but also invoke directly to get result
-            # Based on langchain-mcp-adapters tests, we should use ainvoke and extract from messages
             try:
-                # Invoke agent directly (this is the recommended pattern from tests)
-                result = await self.agent_graph.ainvoke(
+                # Invoke AgentExecutor (synchronous invoke, but we're in async context)
+                # AgentExecutor.invoke() is synchronous, so we run it in executor
+                import asyncio
+                result = await asyncio.to_thread(
+                    self.agent_executor.invoke,
                     input_data,
                     config=agent_config,
                 )
                 
                 self.logger.debug(
-                    f"Agent result type={type(result)}, keys={list(result.keys()) if isinstance(result, dict) else 'N/A'}",
+                    f"AgentExecutor result type={type(result)}, keys={list(result.keys()) if isinstance(result, dict) else 'N/A'}",
                     extra={"session_id": self.session_id}
                 )
                 
-                # Extract final message content from result
-                # Based on langchain-mcp-adapters tests, result should have "messages" key
-                if isinstance(result, dict) and "messages" in result:
-                    messages = result["messages"]
-                    self.logger.debug(
-                        f"Found {len(messages)} messages in result",
-                        extra={"session_id": self.session_id}
-                    )
-                    
-                    # Get the last message which should be the final response
-                    # Check all messages in reverse to find the last one with content
-                    for idx, msg in enumerate(reversed(messages)):
-                        if hasattr(msg, "content") and msg.content:
-                            final_output = msg.content
-                            self.logger.info(
-                                f"✅ Extracted final output from message {len(messages)-idx-1}: {len(final_output)} chars",
-                                extra={"session_id": self.session_id, "message_type": type(msg).__name__}
-                            )
-                            break
-                        elif isinstance(msg, dict) and "content" in msg:
-                            final_output = msg["content"]
-                            self.logger.info(
-                                f"✅ Extracted final output from message dict {len(messages)-idx-1}: {len(final_output)} chars",
-                                extra={"session_id": self.session_id}
-                            )
-                            break
-                    
-                    # Also check for tool calls in messages for logging
-                    # Reference: https://docs.ollama.com/capabilities/tool-calling#python
-                    # Ollama returns tool_calls in format: {"type": "function", "function": {"name": "...", "arguments": {...}}}
-                    # LangChain converts this to: {"name": "...", "args": {...}, "id": "...", "type": "tool_call"}
-                    for msg in messages:
-                        if hasattr(msg, "tool_calls") and msg.tool_calls:
-                            self.logger.info(
-                                f"🔧 Found tool_calls in message: {len(msg.tool_calls)} calls",
-                                extra={"session_id": self.session_id, "tool_calls": msg.tool_calls}
-                            )
-                            # Extract tool call info (LangChain format)
-                            tool_call = msg.tool_calls[0]
-                            tool_name = tool_call.get("name", "") if isinstance(tool_call, dict) else getattr(tool_call, "name", "")
-                            tool_args = tool_call.get("args", {}) if isinstance(tool_call, dict) else getattr(tool_call, "args", {})
-                            
-                            await publish(EventType.TOOL_CALLED, {
-                                "session_id": self.session_id,
-                                "tool": tool_name,
-                                "arguments": tool_args,
-                            })
+                # Extract final output from AgentExecutor result
+                # AgentExecutor returns a dict with "output" key containing the final response
+                # Reference: _helpers/langchain/libs/langchain/langchain_classic/agents/tool_calling_agent/base.py
+                if isinstance(result, dict):
+                    # AgentExecutor typically returns {"output": "..."}
+                    if "output" in result:
+                        final_output = result["output"]
+                        self.logger.info(
+                            f"✅ Extracted final output from AgentExecutor result['output']: {len(final_output) if final_output else 0} chars",
+                            extra={"session_id": self.session_id}
+                        )
+                    # Some versions may return "messages" key
+                    elif "messages" in result:
+                        messages = result["messages"]
+                        self.logger.debug(
+                            f"Found {len(messages)} messages in result",
+                            extra={"session_id": self.session_id}
+                        )
+                        
+                        # Get the last message which should be the final response
+                        for idx, msg in enumerate(reversed(messages)):
+                            if hasattr(msg, "content") and msg.content:
+                                final_output = msg.content
+                                self.logger.info(
+                                    f"✅ Extracted final output from message {len(messages)-idx-1}: {len(final_output)} chars",
+                                    extra={"session_id": self.session_id, "message_type": type(msg).__name__}
+                                )
+                                break
+                            elif isinstance(msg, dict) and "content" in msg:
+                                final_output = msg["content"]
+                                self.logger.info(
+                                    f"✅ Extracted final output from message dict {len(messages)-idx-1}: {len(final_output)} chars",
+                                    extra={"session_id": self.session_id}
+                                )
+                                break
+                        
+                        # Also check for tool calls in messages for logging
+                        for msg in messages:
+                            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                                self.logger.info(
+                                    f"🔧 Found tool_calls in message: {len(msg.tool_calls)} calls",
+                                    extra={"session_id": self.session_id, "tool_calls": msg.tool_calls}
+                                )
+                                # Extract tool call info (LangChain format)
+                                tool_call = msg.tool_calls[0]
+                                tool_name = tool_call.get("name", "") if isinstance(tool_call, dict) else getattr(tool_call, "name", "")
+                                tool_args = tool_call.get("args", {}) if isinstance(tool_call, dict) else getattr(tool_call, "args", {})
+                                
+                                await publish(EventType.TOOL_CALLED, {
+                                    "session_id": self.session_id,
+                                    "tool": tool_name,
+                                    "arguments": tool_args,
+                                })
+                    else:
+                        # Result is not in expected format, try to extract as string
+                        final_output = str(result.get("result", result))
+                        self.logger.warning(
+                            f"Result is not in expected format, using result/string: {type(result)}",
+                            extra={"session_id": self.session_id}
+                        )
                 else:
-                    # Result is not in expected format
+                    # Result is not a dict, convert to string
                     final_output = str(result)
                     self.logger.warning(
-                        f"Result is not a dict with messages, converting to string: {type(result)}",
+                        f"Result is not a dict, converting to string: {type(result)}",
                         extra={"session_id": self.session_id}
                     )
                 
@@ -786,100 +849,32 @@ The tool schemas and parameters are provided to you automatically - use them as 
                     })
                     
             except Exception as e:
-                # Fallback if something goes wrong
+                # Log error during agent execution
+                # According to LangChain best practices, use msg variable for error messages
+                msg = f"Error during AgentExecutor execution: {str(e)}"
                 self.logger.error(
-                    f"Error during agent execution: {e}",
+                    msg,
                     extra={"session_id": self.session_id},
                     exc_info=True
                 )
                 
-                # Try to invoke directly as last resort
+                # Try to extract partial result if available
                 try:
-                    result = await self.agent_graph.ainvoke(
-                        input_data,
-                        config=agent_config,
-                    )
-                    
-                    if isinstance(result, dict) and "messages" in result:
-                        messages = result["messages"]
-                        for msg in reversed(messages):
-                            if hasattr(msg, "content") and msg.content:
-                                final_output = msg.content
-                                break
-                except Exception as e2:
-                    self.logger.error(
-                        f"Fallback ainvoke also failed: {e2}",
-                        extra={"session_id": self.session_id},
-                        exc_info=True
-                    )
-                    final_output = f"Error: {str(e)}"
-                # Fallback to ainvoke if astream_events is not available
-                self.logger.warning(
-                    f"astream_events not available, falling back to ainvoke: {e}"
-                )
-                
-                # Invoke agent directly
-                result = await self.agent_graph.ainvoke(
-                    input_data,
-                    config=agent_config,
-                )
-                
-                self.logger.debug(
-                    f"ainvoke result type={type(result)}, keys={list(result.keys()) if isinstance(result, dict) else 'N/A'}",
-                    extra={"session_id": self.session_id}
-                )
-                
-                # Extract final message content
-                if isinstance(result, dict):
-                    if "messages" in result:
-                        messages = result["messages"]
-                        self.logger.debug(
-                            f"ainvoke: found {len(messages)} messages",
-                            extra={"session_id": self.session_id}
-                        )
-                        
-                        if messages:
-                            # Get the last message which should be the final response
-                            last_msg = messages[-1]
-                            self.logger.debug(
-                                f"ainvoke: last_msg type={type(last_msg)}, has content={hasattr(last_msg, 'content')}",
+                    # Some errors may still have partial results
+                    if hasattr(e, "last_result") and e.last_result:
+                        result = e.last_result
+                        if isinstance(result, dict) and "output" in result:
+                            final_output = result["output"]
+                            self.logger.info(
+                                f"✅ Extracted partial output from error result: {len(final_output) if final_output else 0} chars",
                                 extra={"session_id": self.session_id}
                             )
-                            
-                            if hasattr(last_msg, "content"):
-                                final_output = last_msg.content
-                                self.logger.info(
-                                    f"✅ Extracted final output from ainvoke last_msg.content: {len(final_output) if final_output else 0} chars",
-                                    extra={"session_id": self.session_id}
-                                )
-                            elif isinstance(last_msg, dict) and "content" in last_msg:
-                                final_output = last_msg["content"]
-                            else:
-                                # Check all messages for content
-                                for idx, msg in enumerate(reversed(messages)):
-                                    if hasattr(msg, "content") and msg.content:
-                                        final_output = msg.content
-                                        self.logger.info(
-                                            f"✅ Extracted final output from ainvoke message {len(messages)-idx-1}: {len(final_output)} chars",
-                                            extra={"session_id": self.session_id}
-                                        )
-                                        break
-                    else:
-                        final_output = str(result)
-                else:
-                    final_output = str(result)
+                except Exception:
+                    pass
                 
-                if final_output:
-                    await publish(EventType.LLM_RESPONSE, {
-                        "session_id": self.session_id,
-                        "content": final_output,
-                        "streaming": False,
-                    })
-                else:
-                    self.logger.warning(
-                        "No final output extracted from ainvoke result",
-                        extra={"session_id": self.session_id, "result_type": type(result)}
-                    )
+                # If no output was extracted, use error message
+                if not final_output:
+                    final_output = f"Error: {str(e)}"
             
             # Use accumulated content if available (from streaming)
             if accumulated_content and not final_output:
@@ -905,16 +900,19 @@ The tool schemas and parameters are provided to you automatically - use them as 
             }
                 
         except Exception as e:
+            # Log execution error
+            # According to LangChain best practices, use msg variable for error messages
+            msg = str(e)
             duration = time.time() - start_time
             log_event(
                 self.logger,
                 "tool_calling_executor.error",
                 session_id=self.session_id,
                 duration_ms=duration * 1000,
-                error=str(e),
+                error=msg,
                 level="ERROR",
             )
             return {
                 "success": False,
-                "error": f"Execution error: {str(e)}",
+                "error": f"Execution error: {msg}",
             }

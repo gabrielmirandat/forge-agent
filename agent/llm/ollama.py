@@ -180,6 +180,38 @@ class OllamaProvider(LLMProvider):
                 # If we have tool calls, return LLMResponse
                 if tool_calls:
                     debug_logger.debug(f"Returning LLMResponse with {len(tool_calls)} tool calls")
+                    
+                    # Track usage metrics if session_id provided (for tool calls too)
+                    if session_id:
+                        try:
+                            from agent.observability.llm_metrics import get_llm_metrics
+                            
+                            # Extract token usage from Ollama response
+                            prompt_tokens = data.get("prompt_eval_count", 0) or 0
+                            completion_tokens = data.get("eval_count", 0) or 0
+                            total_tokens = prompt_tokens + completion_tokens
+                            
+                            # Also check for usage object
+                            if "usage" in data:
+                                usage = data["usage"]
+                                prompt_tokens = usage.get("prompt_tokens", prompt_tokens)
+                                completion_tokens = usage.get("completion_tokens", completion_tokens)
+                                total_tokens = usage.get("total_tokens", total_tokens)
+                            
+                            # Record usage with response time
+                            metrics = get_llm_metrics()
+                            metrics.record_usage(
+                                session_id=session_id,
+                                model=self.model,
+                                prompt_tokens=prompt_tokens,
+                                completion_tokens=completion_tokens,
+                                total_tokens=total_tokens if total_tokens > 0 else None,
+                                response_time=request_duration,
+                            )
+                        except Exception as e:
+                            import logging
+                            logging.getLogger("ollama.metrics").warning(f"Failed to track LLM metrics: {e}", exc_info=True)
+                    
                     return LLMResponse(content=content, tool_calls=tool_calls)
                 
                 # Otherwise return text content
@@ -230,6 +262,7 @@ class OllamaProvider(LLMProvider):
                                 prompt_tokens=prompt_tokens,
                                 completion_tokens=completion_tokens,
                                 total_tokens=total_tokens if total_tokens > 0 else None,
+                                response_time=request_duration,
                             )
                             
                             logger.debug(
