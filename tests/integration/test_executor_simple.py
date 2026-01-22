@@ -5,7 +5,7 @@ import asyncio
 import sys
 import tempfile
 from pathlib import Path
-sys.path.insert(0, '/home/gabriel-miranda/repos/forge-agent')
+# Project root is already in path when running from tests/
 
 from agent.config.loader import ConfigLoader
 from agent.runtime.langchain_executor import LangChainExecutor
@@ -18,7 +18,7 @@ async def test_executor_simple():
     print("🔍 Test 2: LangChain Executor with 'Hey'...")
     
     # Load config
-    config_path = Path(__file__).parent.parent / "config" / "agent.ollama.yaml"
+    config_path = Path(__file__).parent.parent.parent / "config" / "agent.ollama.yaml"
     loader = ConfigLoader(config_path=str(config_path))
     config = loader.load()
     

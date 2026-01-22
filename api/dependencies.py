@@ -140,16 +140,31 @@ async def _register_mcp_tools(registry: ToolRegistry, config: AgentConfig):
             continue
         
         try:
-            # Skip Docker-type MCPs connection here - they are managed by DockerManager
-            # But we still need to register them for tool discovery
+            # Resolve workspace path for all server types
             if mcp_config.get("type") == "docker":
-                logger.info(f"MCP server {mcp_name} is Docker-type, connection handled by DockerManager")
+                logger.info(f"MCP server {mcp_name} is Docker-type, connecting via MCPClient")
                 mcp_config_resolved = mcp_config.copy()
-                # Pass workspace_path to MCPClient for DockerManager to use
+                # Pass workspace_path to MCPClient for Docker volume resolution
                 mcp_config_resolved["workspace_path"] = config.workspace.base_path
+                
+                # Resolve workspace path in volumes
+                if "volumes" in mcp_config_resolved:
+                    from pathlib import Path
+                    workspace_base = str(Path(config.workspace.base_path).expanduser().resolve())
+                    resolved_volumes = []
+                    for volume in mcp_config_resolved["volumes"]:
+                        if "{{workspace.base_path}}" in volume:
+                            volume = volume.replace("{{workspace.base_path}}", workspace_base)
+                        if volume.startswith("~"):
+                            volume = str(Path(volume).expanduser())
+                        resolved_volumes.append(volume)
+                    mcp_config_resolved["volumes"] = resolved_volumes
             else:
                 # Resolve workspace path placeholder in command if present
                 mcp_config_resolved = mcp_config.copy()
+                # Pass workspace_path to MCPClient for local servers
+                mcp_config_resolved["workspace_path"] = config.workspace.base_path if hasattr(config, "workspace") else "~/repos"
+                
                 if "command" in mcp_config_resolved:
                     workspace_base = config.workspace.base_path if hasattr(config, "workspace") else "~/repos"
                     from pathlib import Path

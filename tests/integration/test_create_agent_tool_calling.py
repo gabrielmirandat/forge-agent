@@ -5,7 +5,7 @@ import asyncio
 import sys
 import tempfile
 from pathlib import Path
-sys.path.insert(0, '/home/gabriel-miranda/repos/forge-agent')
+# Project root is already in path when running from tests/
 
 from langchain_ollama import ChatOllama
 from langchain.agents import create_agent

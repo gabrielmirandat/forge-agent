@@ -32,7 +32,7 @@ async def test_tool_chaining_with_metrics():
     print()
     
     # Get config and tools
-    config_path = Path(__file__).parent.parent / "config" / "agent.ollama.yaml"
+    config_path = Path(__file__).parent.parent.parent / "config" / "agent.ollama.yaml"
     loader = ConfigLoader(config_path=str(config_path))
     config = loader.load()
     

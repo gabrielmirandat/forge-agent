@@ -5,7 +5,7 @@ using the official langchain-mcp-adapters pattern.
 
 Models tested:
 - llama3.1: ❌ Removed (tool calling does not work reliably)
-- qwen3:8b: ✅ Works (creates files via tool calling)
+- hhao/qwen2.5-coder-tools: ✅ Works (creates files via tool calling)
 - mistral: ❌ Does not call tools (model limitation, not integration issue)
 """
 
@@ -31,21 +31,21 @@ def test_workspace():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model_name", ["qwen3:8b"])
+@pytest.mark.parametrize("model_name", ["hhao/qwen2.5-coder-tools"])
 async def test_model_mcp_tool_calling(model_name: str, test_workspace: Path):
     """Test that a model can call MCP tools via langchain-mcp-adapters.
     
     This test verifies:
-    1. MultiServerMCPClient can connect to Desktop Commander MCP server
+    1. MultiServerMCPClient can connect to filesystem MCP server (local)
     2. Tools are loaded correctly from MCP server
     3. Model can call write_file tool when prompted
     4. File is created successfully in the workspace
     
     Args:
-        model_name: Name of the model to test (llama3.1 or qwen3:8b)
+        model_name: Name of the model to test (hhao/qwen2.5-coder-tools)
         test_workspace: Temporary workspace directory
     """
-    # Build docker command for Desktop Commander MCP server
+    # Use Docker filesystem MCP server
     docker_command = [
         "docker",
         "run",
@@ -53,13 +53,13 @@ async def test_model_mcp_tool_calling(model_name: str, test_workspace: Path):
         "--rm",
         "-v",
         f"{test_workspace}:/workspace",
-        "mcp/desktop-commander:latest",
+        "mcp/filesystem:latest",
+        "/workspace",
     ]
     
-    # Use MultiServerMCPClient (official pattern from langchain-mcp-adapters)
     client = MultiServerMCPClient(
         {
-            "desktop_commander": {
+            "filesystem": {
                 "command": docker_command[0],
                 "args": docker_command[1:],
                 "transport": "stdio",
@@ -92,14 +92,14 @@ async def test_model_mcp_tool_calling(model_name: str, test_workspace: Path):
     # Reference: _helpers/langchain/libs/langchain/langchain_classic/agents/tool_calling_agent/base.py
     prompt_template = ChatPromptTemplate.from_messages([
         ("system", (
-            "You are a helpful assistant with access to filesystem tools via MCP.\n\n"
-            "CRITICAL RULES:\n"
-            "1. When the user asks you to create or write a file, you MUST call the write_file tool.\n"
-            "2. Do not just suggest code - you MUST actually call the tool.\n"
-            "3. Use the current directory (/workspace) for relative paths.\n"
-            '4. When the user says "Crie um hello world em python no diretorio atual", you MUST:\n'
-            '   - Choose a suitable file name (e.g., "hello-world.py").\n'
-            "   - Call the write_file tool with that path and content \"print('Hello, World!')\".\n"
+            f"You are a helpful assistant with access to filesystem tools via MCP.\n\n"
+            f"CRITICAL RULES:\n"
+            f"1. When the user asks you to create or write a file, you MUST call the write_file tool.\n"
+            f"2. Do not just suggest code - you MUST actually call the tool.\n"
+            f"3. Use {test_workspace} as the workspace_base parameter for filesystem operations.\n"
+            f'4. When the user says "Crie um hello world em python no diretorio atual", you MUST:\n'
+            f'   - Choose a suitable file name (e.g., "hello-world.py").\n'
+            f"   - Call the write_file tool with that path, workspace_base={test_workspace}, and content \"print('Hello, World!')\".\n"
         )),
         MessagesPlaceholder("chat_history", optional=True),
         ("human", "{input}"),
@@ -185,5 +185,5 @@ async def test_model_mcp_tool_calling(model_name: str, test_workspace: Path):
 
 @pytest.mark.asyncio
 async def test_qwen3_mcp_tool_calling(test_workspace: Path):
-    """Specific test for Qwen3:8b MCP tool calling."""
-    await test_model_mcp_tool_calling("qwen3:8b", test_workspace)
+    """Specific test for hhao/qwen2.5-coder-tools MCP tool calling."""
+    await test_model_mcp_tool_calling("hhao/qwen2.5-coder-tools", test_workspace)

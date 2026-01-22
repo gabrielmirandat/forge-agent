@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test qwen3:8b with create_agent to verify it works."""
+"""Test hhao/qwen2.5-coder-tools with create_agent to verify it works."""
 
 import asyncio
 import sys
@@ -7,7 +7,7 @@ import tempfile
 import os
 from pathlib import Path
 
-sys.path.insert(0, '/home/gabriel-miranda/repos/forge-agent')
+# Project root is already in path when running from tests/
 
 from langchain_ollama import ChatOllama
 from langchain.agents import create_agent, AgentState
@@ -26,11 +26,11 @@ def list_directory(path: str = ".") -> str:
         return f"Error: {e}"
 
 async def test_qwen3_create_agent():
-    """Test if qwen3:8b works with create_agent."""
-    print("🔍 Testing qwen3:8b with create_agent...")
+    """Test if hhao/qwen2.5-coder-tools works with create_agent."""
+    print("🔍 Testing hhao/qwen2.5-coder-tools with create_agent...")
     
     llm = ChatOllama(
-        model="qwen3:8b",
+        model="hhao/qwen2.5-coder-tools",
         base_url="http://localhost:11434",
         temperature=0.1,
         timeout=60.0,
@@ -40,7 +40,7 @@ async def test_qwen3_create_agent():
     llm_with_tools = llm.bind_tools(tools)
     
     print(f"\n✅ LLM created with {len(tools)} tool(s)")
-    print(f"   Model: qwen3:8b")
+    print(f"   Model: hhao/qwen2.5-coder-tools")
     print(f"   Tool: {tools[0].name}")
     
     # Create agent with state_schema and checkpointer

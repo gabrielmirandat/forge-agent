@@ -3,7 +3,7 @@
 
 import asyncio
 import sys
-sys.path.insert(0, '/home/gabriel-miranda/repos/forge-agent')
+# Project root is already in path when running from tests/
 
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage

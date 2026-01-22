@@ -135,23 +135,55 @@ class MCPClient:
             return False
         except Exception as e:
             self._status = "failed"
-            self.logger.error(f"Failed to connect to MCP server '{self.name}': {e}", exc_info=True)
+            error_msg = str(e)
+            # Log detailed error information for debugging
+            self.logger.error(
+                f"Failed to connect to MCP server '{self.name}': {e}",
+                exc_info=True
+            )
+            # Check for common path-related errors
+            if "/app/" in error_msg:
+                self.logger.error(
+                    f"⚠️  Path-related error detected in '{self.name}': {error_msg}\n"
+                    f"   This might indicate:\n"
+                    f"   - Volume mount conflict (check if /app conflicts with WorkingDir)\n"
+                    f"   - Incomplete path being passed to tool\n"
+                    f"   - Server-side path resolution issue"
+                )
             return False
 
     async def _connect_local(self):
         """Connect to local MCP server via stdio."""
         from mcp import StdioServerParameters
+        from pathlib import Path
 
         command = self.config.get("command", [])
         if not command:
             raise ValueError("Local MCP server requires 'command' configuration")
 
-        env = self.config.get("environment", {})
+        env_vars = self.config.get("environment", {})
+        
+        # Resolve environment variables (similar to _connect_docker)
+        resolved_env = {}
+        workspace_path = self.config.get("workspace_path", os.getenv("WORKSPACE_BASE_PATH", "~/repos"))
+        workspace_base = str(Path(workspace_path).expanduser().resolve())
+        
+        if env_vars:
+            for key, value in env_vars.items():
+                # Support {{workspace.base_path}} syntax
+                if isinstance(value, str) and "{{workspace.base_path}}" in value:
+                    resolved_env[key] = value.replace("{{workspace.base_path}}", workspace_base)
+                # Support {{env:VAR_NAME}} syntax to read from system environment
+                elif isinstance(value, str) and value.startswith("{{env:") and value.endswith("}}"):
+                    env_var_name = value[6:-2]  # Extract VAR_NAME from {{env:VAR_NAME}}
+                    resolved_env[key] = os.getenv(env_var_name, "")
+                else:
+                    resolved_env[key] = value
         
         server_params = StdioServerParameters(
             command=command[0],
             args=command[1:] if len(command) > 1 else [],
-            env=env,
+            env=resolved_env,
         )
 
         self._transport = stdio_client(server_params)

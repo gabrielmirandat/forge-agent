@@ -43,6 +43,16 @@ class EventType(str, Enum):
     LLM_RESPONSE = "llm.response"  # LLM text response (when no tool calls)
     LLM_REASONING = "llm.reasoning"  # LLM reasoning/thinking process
     TOOL_DECISION = "tool.decision"  # Model decision to use or not use tools
+    
+    # Real-time streaming events (from astream_events)
+    LLM_STREAM_TOKEN = "llm.stream.token"  # Real-time token streaming
+    LLM_STREAM_START = "llm.stream.start"  # LLM generation started
+    LLM_STREAM_END = "llm.stream.end"  # LLM generation completed
+    TOOL_STREAM_START = "tool.stream.start"  # Tool execution started (real-time)
+    TOOL_STREAM_END = "tool.stream.end"  # Tool execution completed (real-time)
+    TOOL_STREAM_ERROR = "tool.stream.error"  # Tool execution error (real-time)
+    CHAIN_STREAM_START = "chain.stream.start"  # Chain execution started
+    CHAIN_STREAM_END = "chain.stream.end"  # Chain execution completed
 
 
 @dataclass

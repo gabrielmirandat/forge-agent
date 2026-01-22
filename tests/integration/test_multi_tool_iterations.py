@@ -34,29 +34,30 @@ async def all_tools(test_workspace: Path) -> Dict[str, List[Any]]:
     """Get tools from multiple MCP servers."""
     tools_by_server = {}
     
-    # Desktop Commander tools
-    docker_cmd_desktop = [
+    # Filesystem tools (Docker MCP server)
+    docker_command = [
         "docker",
         "run",
         "-i",
         "--rm",
         "-v",
         f"{test_workspace}:/workspace",
-        "mcp/desktop-commander:latest",
+        "mcp/filesystem:latest",
+        "/workspace",
     ]
     
-    client_desktop = MultiServerMCPClient(
+    client_filesystem = MultiServerMCPClient(
         {
-            "desktop_commander": {
-                "command": docker_cmd_desktop[0],
-                "args": docker_cmd_desktop[1:],
+            "filesystem": {
+                "command": docker_command[0],
+                "args": docker_command[1:],
                 "transport": "stdio",
             }
         }
     )
     
-    desktop_tools = await client_desktop.get_tools()
-    tools_by_server["desktop_commander"] = desktop_tools
+    filesystem_tools = await client_filesystem.get_tools()
+    tools_by_server["filesystem"] = filesystem_tools
     
     # Fetch tools (for fetching public APIs)
     # Also map workspace volume so fetch can save files if needed
@@ -90,7 +91,7 @@ async def all_tools(test_workspace: Path) -> Dict[str, List[Any]]:
 def llm():
     """Create ChatOllama LLM instance."""
     return ChatOllama(
-        model="qwen3:8b",
+        model="hhao/qwen2.5-coder-tools",
         base_url="http://localhost:11434",
         temperature=0.1,
         timeout=120.0,  # Longer timeout for multi-tool operations
@@ -161,13 +162,29 @@ class IterationCollector:
             print(f"     Output: {output_preview}...")
         
         print(f"\n🤔 Reasoning Steps: {len(self.reasoning)}")
-        for i, reasoning in enumerate(self.reasoning, 1):
-            print(f"  {i}. {reasoning[:200]}...")
+        if len(self.reasoning) == 0:
+            print("  ⚠️  No reasoning captured. This could mean:")
+            print("     - Model doesn't support explicit reasoning (hhao/qwen2.5-coder-tools may not)")
+            print("     - Reasoning is embedded in content, not in additional_kwargs")
+            print("     - Model completed task without explicit reasoning steps")
+        else:
+            for i, reasoning in enumerate(self.reasoning, 1):
+                print(f"  {i}. {reasoning[:200]}...")
         
         if self.errors:
             print(f"\n❌ Errors: {len(self.errors)}")
-            for i, error in enumerate(self.errors, 1):
-                print(f"  {i}. {error}")
+            if len(self.errors) == 0:
+                print("  ✅ No errors captured")
+            else:
+                for i, error in enumerate(self.errors, 1):
+                    error_event = error.get('event', 'unknown')
+                    error_tool = error.get('tool', '')
+                    error_msg = str(error.get('error', ''))[:200]
+                    print(f"  {i}. {error_event}" + (f" ({error_tool})" if error_tool else "") + f": {error_msg}...")
+                    # Explain what should happen
+                    if error_tool == "write_file" and "invalid_type" in error_msg:
+                        print(f"      ⚠️  This error should be passed back to LLM by AgentExecutor for auto-correction")
+                        print(f"      📝 If LLM doesn't retry, AgentExecutor may not be passing errors back correctly")
         
         print("="*80 + "\n")
 
@@ -221,7 +238,7 @@ async def test_multi_tool_workflow_with_reasoning(
     - Public API data is fetched and saved correctly
     """
     # Get all tools
-    desktop_tools = all_tools.get("desktop_commander", [])
+    filesystem_tools = all_tools.get("filesystem", [])
     fetch_tools = all_tools.get("fetch", [])
     
     # Find specific tools we need
@@ -229,7 +246,7 @@ async def test_multi_tool_workflow_with_reasoning(
     read_file_tool = None
     fetch_url_tool = None
     
-    for tool in desktop_tools:
+    for tool in filesystem_tools:
         tool_name_lower = tool.name.lower()
         if "write_file" in tool_name_lower:
             write_file_tool = tool
@@ -257,12 +274,12 @@ async def test_multi_tool_workflow_with_reasoning(
     # Format tools by server: "tool : server_name - description - tool1, tool2, ..."
     tools_list = []
     
-    # Desktop Commander tools
-    if desktop_tools:
-        desktop_tool_names = [tool.name for tool in desktop_tools]
-        tools_str = ", ".join(sorted(desktop_tool_names))
+    # Filesystem tools
+    if filesystem_tools:
+        filesystem_tool_names = [tool.name for tool in filesystem_tools]
+        tools_str = ", ".join(sorted(filesystem_tool_names))
         # Use same description as agent/runtime/langchain_executor.py::_generate_server_description
-        tools_list.append(f"tool : desktop_commander - Handle filesystem and shell operations - {tools_str}")
+        tools_list.append(f"tool : filesystem - Handle filesystem operations - {tools_str}")
     
     # Fetch tools
     if fetch_tools:
@@ -276,12 +293,14 @@ async def test_multi_tool_workflow_with_reasoning(
     # Use same template pattern as config/agent.ollama.yaml
     system_prompt = f"""You are a helpful coding assistant with access to tools via function calling.
 
-Workspace: /workspace
+Workspace: {test_workspace}
 
 Available tools:
 {tools_section}
 
 IMPORTANT: You have access to tools via function calling. When the user asks questions that require information or actions (like "what directory am I in?", "list files", "read a file", "what's in this folder?", etc.), you MUST call the appropriate tool. Do not say you don't have access - use the tools!
+
+For filesystem tools, use {test_workspace} as the workspace_base parameter.
 
 For simple conversational questions that don't require tools, answer directly.
 
@@ -300,11 +319,11 @@ The tool schemas and parameters are provided to you automatically via function c
     # Complex prompt that requires multiple tools
     # Using JSONPlaceholder API (public API for testing)
     complex_prompt = (
-        "I want you to:\n"
-        "1. Fetch data from the public API: https://jsonplaceholder.typicode.com/posts/1\n"
-        "2. Save the fetched data to a file named 'api_data.json' in /workspace\n"
-        "3. Read the file 'api_data.json' to verify it was saved correctly\n"
-        "Please execute all these steps."
+        f"I want you to:\n"
+        f"1. Fetch data from the public API: https://jsonplaceholder.typicode.com/posts/1\n"
+        f"2. Save the fetched data to a file named 'api_data.json' in {test_workspace}\n"
+        f"3. Read the file 'api_data.json' from {test_workspace} to verify it was saved correctly\n"
+        f"Please execute all these steps. Use {test_workspace} as workspace_base for filesystem operations."
     )
     
     print(f"\n{'='*80}")
@@ -353,12 +372,31 @@ The tool schemas and parameters are provided to you automatically via function c
                 print(f"✅ Tool completed: {tool_name}")
                 print(f"   Output: {str(tool_output)[:200]}...")
             
+            elif event_name == "on_tool_error":
+                # Capture tool errors - AgentExecutor should pass these back to LLM for auto-correction
+                tool_name = event_data.get("name", "") or event.get("name", "")
+                error = event_data.get("error", "")
+                error_str = str(error)
+                
+                error_info = {
+                    "event": event_name,
+                    "tool": tool_name,
+                    "error": error_str,
+                }
+                collector.add_error(error_info)
+                
+                print(f"❌ Tool error: {tool_name}")
+                print(f"   Error: {error_str[:300]}...")
+                print(f"   ⚠️  AgentExecutor should pass this error back to LLM for auto-correction")
+            
             # Capture LLM calls and reasoning
             elif event_name == "on_chat_model_start":
                 llm_input = event_data.get("input", {})
                 if isinstance(llm_input, dict) and "messages" in llm_input:
                     messages = llm_input["messages"]
                     input_text = ""
+                    error_detected_in_input = False
+                    
                     for msg in messages:
                         if hasattr(msg, "content"):
                             content = msg.content
@@ -367,15 +405,39 @@ The tool schemas and parameters are provided to you automatically via function c
                                 for block in content:
                                     if isinstance(block, dict):
                                         if block.get("type") == "text":
-                                            input_text += block.get("text", "") + "\n"
+                                            text = block.get("text", "")
+                                            input_text += text + "\n"
+                                            # Check if this message contains an error (from previous tool failure)
+                                            if "error" in text.lower() or "invalid_type" in text.lower() or "expected string" in text.lower():
+                                                error_detected_in_input = True
+                                                print(f"🔄 LLM received error message - should attempt auto-correction")
                                         elif block.get("type") == "thinking" or "reasoning" in str(block).lower():
                                             reasoning_text = str(block)
                                             collector.add_reasoning(reasoning_text)
                                             print(f"🤔 Reasoning detected: {reasoning_text[:200]}...")
                             else:
-                                input_text += str(content) + "\n"
+                                content_str = str(content)
+                                input_text += content_str + "\n"
+                                # Check for error messages in content
+                                if "error" in content_str.lower() or "invalid_type" in content_str.lower():
+                                    error_detected_in_input = True
+                                    print(f"🔄 LLM received error message - should attempt auto-correction")
+                    
+                    # Also check ToolMessage for errors
+                    for msg in messages:
+                        if hasattr(msg, "type") and msg.type == "tool":
+                            if hasattr(msg, "content"):
+                                tool_content = str(msg.content)
+                                if "error" in tool_content.lower() or "invalid_type" in tool_content.lower():
+                                    error_detected_in_input = True
+                                    print(f"🔄 LLM received tool error message - should attempt auto-correction")
+                                    print(f"   Tool error content: {tool_content[:300]}...")
+                    
                     collector.add_llm_call(input_text, "")
-                    print(f"💬 LLM call started")
+                    if error_detected_in_input:
+                        print(f"💬 LLM call started (with error context - expecting auto-correction)")
+                    else:
+                        print(f"💬 LLM call started")
             
             elif event_name == "on_chat_model_stream":
                 # Capture reasoning from streaming chunks
@@ -391,14 +453,42 @@ The tool schemas and parameters are provided to you automatically via function c
             
             elif event_name == "on_chat_model_end":
                 llm_output = event_data.get("output", "")
+                output_text = ""
+                reasoning_found = False
+                
                 if hasattr(llm_output, "content"):
                     output_text = llm_output.content
                     # Check for reasoning in message
                     if hasattr(llm_output, "additional_kwargs"):
-                        reasoning_content = llm_output.additional_kwargs.get("reasoning_content")
+                        additional_kwargs = llm_output.additional_kwargs
+                        # Check for reasoning_content (Ollama reasoning)
+                        reasoning_content = additional_kwargs.get("reasoning_content")
                         if reasoning_content:
                             collector.add_reasoning(str(reasoning_content))
+                            reasoning_found = True
                             print(f"🤔 Reasoning in output: {str(reasoning_content)[:200]}...")
+                        
+                        # Also check for other reasoning fields
+                        for key in additional_kwargs.keys():
+                            if "reason" in key.lower() or "think" in key.lower():
+                                reasoning_val = additional_kwargs.get(key)
+                                if reasoning_val:
+                                    collector.add_reasoning(str(reasoning_val))
+                                    reasoning_found = True
+                                    print(f"🤔 Reasoning found in {key}: {str(reasoning_val)[:200]}...")
+                    
+                    # Check if output contains reasoning-like text
+                    if isinstance(output_text, str) and not reasoning_found:
+                        # Some models include reasoning in the content itself
+                        if "let me think" in output_text.lower() or "i need to" in output_text.lower() or "first" in output_text.lower()[:50]:
+                            # Extract potential reasoning
+                            lines = output_text.split("\n")
+                            reasoning_lines = [line for line in lines[:5] if any(word in line.lower() for word in ["think", "need", "first", "then", "should"])]
+                            if reasoning_lines:
+                                reasoning_text = "\n".join(reasoning_lines)
+                                collector.add_reasoning(reasoning_text)
+                                print(f"🤔 Reasoning detected in content: {reasoning_text[:200]}...")
+                
                 elif isinstance(llm_output, dict):
                     output_text = str(llm_output)
                 else:
@@ -406,22 +496,30 @@ The tool schemas and parameters are provided to you automatically via function c
                 
                 if collector.llm_calls:
                     collector.llm_calls[-1]["output"] = output_text
-                print(f"💬 LLM call completed")
+                
+                # Check if this is a retry after an error
+                if collector.errors:
+                    last_error = collector.errors[-1]
+                    if "write_file" in str(last_error.get("tool", "")):
+                        print(f"💬 LLM call completed (after write_file error - checking for auto-correction)")
+                        # Check if output suggests correction attempt
+                        if "json" in output_text.lower() or "string" in output_text.lower() or "convert" in output_text.lower():
+                            print(f"   ✅ LLM appears to be attempting correction")
+                    else:
+                        print(f"💬 LLM call completed")
+                else:
+                    print(f"💬 LLM call completed")
+                
                 print(f"   Output: {output_text[:200]}...")
             
-            # Capture errors (but don't fail - we're checking tool usage, not perfect execution)
-            elif event_name in ["on_tool_error", "on_llm_error", "on_chain_error"]:
+            # Capture other errors (tool_error is handled separately above)
+            elif event_name in ["on_llm_error", "on_chain_error"]:
                 error_info = {
                     "event": event_name,
                     "error": str(event_data.get("error", "Unknown error")),
                 }
                 collector.add_error(error_info)
-                # Only print if it's not the expected write_file error (object vs string)
-                error_str = str(error_info['error'])
-                if "invalid_type" not in error_str or "write_file" not in event_name:
-                    print(f"❌ Error in {event_name}: {error_info['error'][:200]}...")
-                else:
-                    print(f"⚠️  Expected error in write_file (object vs string) - tool was still called")
+                print(f"❌ Error in {event_name}: {error_info['error'][:200]}...")
         
         execution_completed = True
         

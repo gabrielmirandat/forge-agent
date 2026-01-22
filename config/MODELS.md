@@ -8,10 +8,11 @@ According to [Ollama's tool calling documentation](https://ollama.com/search?c=t
 
 ### Recommended Models
 
-1. **qwen3:8b** (default)
+1. **hhao/qwen2.5-coder-tools** (default)
    - ✅ Tested and working
-   - Excellent tool-calling support
+   - Excellent tool-calling support, optimized for coding
    - Config: `agent.ollama.yaml` or `agent.ollama.qwen.yaml`
+   - To download: `ollama pull hhao/qwen2.5-coder-tools`
 
 2. **qwen2.5:14b**
    - Larger Qwen model with excellent tool-calling support
@@ -43,12 +44,13 @@ According to [Ollama's tool calling documentation](https://ollama.com/search?c=t
    ```
 
 3. **Use the appropriate config file**:
-   - For qwen3:8b: `config/agent.ollama.yaml` or `config/agent.ollama.qwen.yaml`
+   - For hhao/qwen2.5-coder-tools: `config/agent.ollama.yaml` or `config/agent.ollama.qwen.yaml`
+   - For qwen3:8b: Use `config/agent.ollama.yaml` and change model to `qwen3:8b`
    - For qwen2.5:14b: `config/agent.ollama.qwen14b.yaml`
 
 4. **Start the application** with the desired config:
    ```bash
-   # Using default (qwen3:8b)
+   # Using default (hhao/qwen2.5-coder-tools)
    python -m api.app
    
    # Or specify a different config
@@ -68,7 +70,7 @@ Always verify the exact model name with `ollama list` before configuring.
 To test if a model supports tool calling, use the test script:
 
 ```bash
-python scripts/test_qwen3_tool_calling.py  # For qwen3:8b
+python scripts/test_qwen3_tool_calling.py  # For hhao/qwen2.5-coder-tools or qwen3:8b
 python scripts/test_qwen3_tool_calling.py  # For Qwen models
 ```
 

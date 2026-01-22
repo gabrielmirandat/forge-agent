@@ -1,7 +1,7 @@
 """Integration test for LLM model switching.
 
 Tests the complete flow:
-1. Switch between different LLM models (qwen3:8b, qwen2.5:14b)
+1. Switch between different LLM models (hhao/qwen2.5-coder-tools, qwen2.5:14b)
 2. Send "hey" message to each model after switching
 3. Ask about the model type to verify the switch worked correctly
 4. Verify responses indicate the correct model is being used
@@ -58,7 +58,7 @@ def tool_registry(test_workspace):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model_config_file,expected_model", [
-    ("agent.ollama.qwen.yaml", "qwen3:8b"),
+    ("agent.ollama.qwen.yaml", "hhao/qwen2.5-coder-tools"),
     ("agent.ollama.qwen14b.yaml", "qwen2.5:14b"),
 ])
 async def test_llm_model_switching(model_config_file: str, expected_model: str, tool_registry: ToolRegistry, test_workspace: str):
@@ -130,7 +130,7 @@ async def test_llm_model_switching(model_config_file: str, expected_model: str, 
     # Verify the response contains indicators of the correct model
     # Qwen models often mention "qwen" or "alibaba"
     model_indicators = {
-        "qwen3:8b": ["qwen", "alibaba", "qwen3", "8b"],
+        "hhao/qwen2.5-coder-tools": ["qwen", "alibaba", "qwen2.5", "coder", "tools"],
         "qwen2.5:14b": ["qwen", "alibaba", "qwen2.5", "14b"],
     }
     
@@ -162,12 +162,12 @@ async def test_llm_switching_sequence(tool_registry: ToolRegistry, test_workspac
     """Test switching between multiple models in sequence.
     
     This test:
-    1. Switches to qwen3:8b, sends "hey", asks about model
-    2. Switches to qwen3:8b, sends "hey", asks about model
+    1. Switches to hhao/qwen2.5-coder-tools, sends "hey", asks about model
+    2. Switches to hhao/qwen2.5-coder-tools, sends "hey", asks about model
     3. Verifies each switch worked correctly
     """
     models_to_test = [
-        ("agent.ollama.qwen.yaml", "qwen3:8b"),
+        ("agent.ollama.qwen.yaml", "hhao/qwen2.5-coder-tools"),
         ("agent.ollama.qwen14b.yaml", "qwen2.5:14b"),
     ]
     

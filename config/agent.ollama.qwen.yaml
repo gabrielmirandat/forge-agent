@@ -10,10 +10,11 @@ agent:
   llm:
     provider: ollama
     base_url: http://localhost:11434
-    # Qwen3:8b - Excellent tool-calling support
+    # hhao/qwen2.5-coder-tools - Excellent tool-calling support, optimized for coding
     # ✅ TESTED: Works correctly with MCP tools via langchain-mcp-adapters
-    model: qwen3:8b
-    temperature: 0.1
+    model: hhao/qwen2.5-coder-tools
+    # Temperature: 0.0 for deterministic JSON output (recommended for tool calling)
+    temperature: 0.0
     max_tokens: 4096
     timeout: 300
   
@@ -34,13 +35,16 @@ agent:
     enabled: false
   
   mcp:
-    desktop_commander:
+    # Filesystem MCP server - official Docker MCP server for filesystem operations
+    # See: https://hub.docker.com/mcp/server/filesystem/overview
+    # Provides: list_directory, read_file, write_file, create_directory, move_file, search_files, etc.
+    filesystem:
       type: docker
       enabled: true
-      image: "mcp/desktop-commander:latest"
+      image: "mcp/filesystem:latest"
       volumes:
-        - "{{workspace.base_path}}:/workspace"
-      args: []
+        - "{{workspace.base_path}}:/projects"
+      args: ["/projects"]
       timeout: 5000
     
     playwright:

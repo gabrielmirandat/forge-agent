@@ -159,8 +159,27 @@ export function ChatPage() {
       
       case 'llm.reasoning':
         // LLM is reasoning/thinking - show in console
-        console.log('LLM reasoning:', event.properties.status, event.properties.content || event.properties.message);
+        console.log('🤔 LLM reasoning:', event.properties.content || event.properties.message);
         // Optionally show in UI
+        break;
+      
+      case 'llm.stream.start':
+        // LLM generation started
+        console.log('💬 LLM generation started');
+        break;
+      
+      case 'llm.stream.token':
+        // Real-time token streaming - update UI in real-time
+        console.log('💬 Token:', event.properties.token);
+        // You can update the UI here to show streaming response
+        break;
+      
+      case 'llm.stream.end':
+        // LLM generation completed
+        console.log('💬 LLM generation completed');
+        if (event.properties.reasoning) {
+          console.log('🤔 Reasoning:', event.properties.reasoning);
+        }
         break;
       
       case 'tool.decision':
@@ -174,9 +193,31 @@ export function ChatPage() {
         break;
       
       case 'tool.called':
+      case 'tool.stream.start':
         // Tool is being called - show progress
-        console.log(`Calling tool: ${event.properties.tool}`, event.properties.arguments);
+        console.log(`🔧 Calling tool: ${event.properties.tool}`, event.properties.arguments || event.properties.input);
         // Optionally show in UI
+        break;
+      
+      case 'tool.stream.end':
+        // Tool execution completed
+        console.log(`✅ Tool completed: ${event.properties.tool}`);
+        console.log(`   Output: ${event.properties.output?.substring(0, 200)}...`);
+        break;
+      
+      case 'tool.stream.error':
+        // Tool execution error
+        console.log(`❌ Tool error: ${event.properties.tool} - ${event.properties.error}`);
+        break;
+      
+      case 'chain.stream.start':
+        // Chain execution started
+        console.log(`🔄 Chain started: ${event.properties.chain}`);
+        break;
+      
+      case 'chain.stream.end':
+        // Chain execution completed
+        console.log(`🔄 Chain completed: ${event.properties.chain}`);
         break;
       
       case 'tool.result':

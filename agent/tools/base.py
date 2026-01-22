@@ -242,8 +242,10 @@ class ToolRegistry:
                 logger.debug(f"Skipping disabled MCP server: {server_name}")
                 continue
 
-            # Only handle Docker-type MCP servers (as in our config)
-            if mcp_config.get("type") == "docker":
+            server_type = mcp_config.get("type", "docker")
+            
+            if server_type == "docker":
+                # Handle Docker-type MCP servers
                 image = mcp_config.get("image")
                 if not image:
                     logger.warning(f"MCP server '{server_name}' has no image configured, skipping")
@@ -285,7 +287,58 @@ class ToolRegistry:
                     "args": docker_cmd[1:],
                     "transport": "stdio",
                 }
-                logger.debug(f"Configured MCP server '{server_name}' for tool loading")
+                logger.debug(f"Configured Docker MCP server '{server_name}' for tool loading")
+            
+            elif server_type == "local":
+                # Handle local MCP servers (e.g., filesystem)
+                command = mcp_config.get("command")
+                if not command:
+                    logger.warning(f"MCP server '{server_name}' has no command configured, skipping")
+                    continue
+                
+                # Resolve command (can be string or list)
+                if isinstance(command, str):
+                    cmd_list = [command]
+                else:
+                    cmd_list = list(command)
+                
+                # Resolve workspace path in command arguments
+                resolved_cmd = []
+                for arg in cmd_list:
+                    if isinstance(arg, str):
+                        # Replace workspace placeholder
+                        if "{{workspace.base_path}}" in arg:
+                            arg = arg.replace("{{workspace.base_path}}", str(workspace_base))
+                        # Expand user home directory
+                        if arg.startswith("~"):
+                            arg = str(Path(arg).expanduser())
+                    resolved_cmd.append(arg)
+                
+                # Resolve environment variables
+                env_vars = mcp_config.get("environment", {})
+                resolved_env: Dict[str, str] = {}
+                for key, value in env_vars.items():
+                    if isinstance(value, str):
+                        # Replace workspace placeholder
+                        if "{{workspace.base_path}}" in value:
+                            resolved_env[key] = value.replace("{{workspace.base_path}}", str(workspace_base))
+                        # Support {{env:VAR_NAME}} syntax
+                        elif value.startswith("{{env:") and value.endswith("}}"):
+                            env_var_name = value[6:-2]
+                            resolved_env[key] = os.getenv(env_var_name, "") or ""
+                        else:
+                            resolved_env[key] = value
+                    else:
+                        resolved_env[key] = str(value)
+                
+                # Configure for MultiServerMCPClient
+                mcp_configs[server_name] = {
+                    "command": resolved_cmd[0],
+                    "args": resolved_cmd[1:] if len(resolved_cmd) > 1 else [],
+                    "transport": "stdio",
+                    "env": resolved_env if resolved_env else None,
+                }
+                logger.debug(f"Configured local MCP server '{server_name}' for tool loading")
 
         if not mcp_configs:
             logger.warning("No enabled MCP servers configured for langchain-mcp-adapters")

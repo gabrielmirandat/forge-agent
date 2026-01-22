@@ -97,7 +97,6 @@ async def startup_event():
     print("\n" + "="*80)
     print("FORGE AGENT STARTUP COMPLETE")
     print("="*80)
-    print(f"✅ Total tools available: {len(langchain_tools)}")
     print(f"✅ Workspace: {config.workspace.base_path}")
     print(f"✅ LLM Provider: {config.llm.provider} ({config.llm.model})")
     print("\n" + "="*80)

@@ -3,7 +3,7 @@
 
 import asyncio
 import sys
-sys.path.insert(0, '/home/gabriel-miranda/repos/forge-agent')
+# Project root is already in path when running from tests/
 
 from pathlib import Path
 from agent.config.loader import ConfigLoader
@@ -16,7 +16,7 @@ async def test_mcp_tools():
     print("🔍 Testing MCP tools registration...")
     
     # Load config
-    config_path = Path(__file__).parent.parent / "config" / "agent.ollama.yaml"
+    config_path = Path(__file__).parent.parent.parent / "config" / "agent.ollama.yaml"
     loader = ConfigLoader(config_path=str(config_path))
     config = loader.load()
     

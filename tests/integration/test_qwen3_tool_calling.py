@@ -1,70 +1,65 @@
 #!/usr/bin/env python3
-"""Test LangChain ChatOllama with tools to see what's being sent to Ollama."""
+"""Test hhao/qwen2.5-coder-tools tool calling directly to verify it works."""
 
 import asyncio
 import sys
-sys.path.insert(0, '/home/gabriel-miranda/repos/forge-agent')
+from pathlib import Path
+
+# Project root is already in path when running from tests/
 
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 
-
 @tool
 def list_directory(path: str = ".") -> str:
     """List files and directories in the given path."""
-    return f"Listing directory: {path}"
+    import os
+    try:
+        items = os.listdir(path)
+        return f"Directory contents: {', '.join(items[:10])}"
+    except Exception as e:
+        return f"Error: {e}"
 
-
-async def test_langchain_ollama_tools():
-    """Test LangChain ChatOllama with tools to see the actual request."""
-    print("🔍 Testing LangChain ChatOllama with tools...")
+async def test_qwen3_tool_calling():
+    """Test if hhao/qwen2.5-coder-tools can call tools."""
+    print("🔍 Testing hhao/qwen2.5-coder-tools with tool calling...")
     
-    # Create LLM
     llm = ChatOllama(
-        model="llama3.1",
+        model="hhao/qwen2.5-coder-tools",
         base_url="http://localhost:11434",
         temperature=0.1,
         timeout=60.0,
     )
     
-    # Bind tools
     tools = [list_directory]
     llm_with_tools = llm.bind_tools(tools)
     
     print(f"\n✅ LLM created with {len(tools)} tool(s)")
-    print(f"   Tool: {tools[0].name}")
-    print(f"   Tool description: {tools[0].description}")
+    print(f"   Model: hhao/qwen2.5-coder-tools")
+    print(f"   Tool: {tools[0].name} - {tools[0].description}")
     
-    # Check what bind_tools did
-    if hasattr(llm_with_tools, "bound_tools"):
-        print(f"\n📋 Bound tools: {llm_with_tools.bound_tools}")
-    
-    # Test invocation
-    print(f"\n📤 Invoking LLM with message: 'Em que pasta estamos?'")
     message = HumanMessage(content="Em que pasta estamos? List the current directory.")
     
+    print("\n📤 Invoking LLM with message: 'Em que pasta estamos? List the current directory.'")
+    print("   Waiting for response...")
+    
     try:
-        # Enable debug logging to see what's being sent
-        import logging
-        logging.basicConfig(level=logging.DEBUG)
-        
         response = await llm_with_tools.ainvoke([message])
         
-        print(f"\n📥 Response received:")
+        print("\n📥 Response received:")
         print(f"   Type: {type(response)}")
-        print(f"   Content: {response.content[:200] if response.content else '(empty)'}")
+        print(f"   Content: {response.content[:200] if hasattr(response, 'content') and response.content else '(empty)'}")
         
-        # Check for tool calls
         if hasattr(response, 'tool_calls') and response.tool_calls:
-            print(f"\n   ✅ SUCCESS: Tool calls found!")
+            print(f"\n   ✅ SUCCESS: Tool calls found: {len(response.tool_calls)}")
             for i, tool_call in enumerate(response.tool_calls):
                 print(f"      Tool call {i+1}:")
-                print(f"         Name: {tool_call.get('name', 'unknown')}")
+                print(f"         Name: {tool_call.get('name', 'N/A')}")
                 print(f"         Args: {tool_call.get('args', {})}")
             return True
         else:
-            print(f"\n   ❌ FAILED: No tool_calls in response")
+            print("\n   ❌ FAILED: No tool calls found in response.")
             print(f"   Response attributes: {[attr for attr in dir(response) if not attr.startswith('_')]}")
             if hasattr(response, 'response_metadata'):
                 print(f"   Response metadata: {response.response_metadata}")
@@ -76,7 +71,6 @@ async def test_langchain_ollama_tools():
         traceback.print_exc()
         return False
 
-
 if __name__ == "__main__":
-    success = asyncio.run(test_langchain_ollama_tools())
+    success = asyncio.run(test_qwen3_tool_calling())
     exit(0 if success else 1)

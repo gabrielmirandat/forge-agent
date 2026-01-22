@@ -123,20 +123,20 @@ class ReasoningCollector:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model_config,model_name", [
-    ("agent.ollama.yaml", "qwen3:8b"),
-    ("agent.ollama.qwen.yaml", "qwen3:8b"),
+    ("agent.ollama.yaml", "hhao/qwen2.5-coder-tools"),
+    ("agent.ollama.qwen.yaml", "hhao/qwen2.5-coder-tools"),
     ("agent.ollama.qwen14b.yaml", "qwen2.5:14b"),
 ])
 @pytest.mark.parametrize("prompt,expected_tool_pattern,description", [
     (
         "Em que pasta estamos?",
         ["list_directory", "get_file_info"],
-        "Should use desktop_commander to get current directory"
+        "Should use filesystem to get current directory"
     ),
     (
         "List files in the current directory",
         ["list_directory"],
-        "Should use desktop_commander to list files"
+        "Should use filesystem to list files"
     ),
     (
         "What is the git status?",
@@ -146,7 +146,7 @@ class ReasoningCollector:
     (
         "Read the README.md file",
         ["read_file"],
-        "Should use desktop_commander to read file"
+        "Should use filesystem to read file"
     ),
     (
         "What is 2 + 2?",

@@ -14,7 +14,8 @@ agent:
     base_url: http://localhost:11434
     # Model selection for tool calling:
     # According to Ollama docs (https://ollama.com/search?c=tools), these models support tools:
-    # - qwen3:8b (recommended) - Excellent tool-calling support, tested and working
+    # - hhao/qwen2.5-coder-tools (default) - Excellent tool-calling support, optimized for coding
+    # - qwen3:8b - Alternative Qwen model with tool support
     # - qwen2.5:14b - Larger Qwen model (config: agent.ollama.qwen14b.yaml)
     #   Note: Model name may vary - check with: ollama list
     #   To download: ollama pull qwen2.5:14b
@@ -24,9 +25,11 @@ agent:
     # Note: Not all models support tool calling - check https://ollama.com/search?c=tools
     # Note: llama3.1 removed - tool calling does not work reliably with this model
     # Note: Model names may vary - verify with: ollama list
-    # Using qwen3:8b as it's proven to work well with tool calling
-    model: qwen3:8b
-    temperature: 0.1
+    # Using hhao/qwen2.5-coder-tools as it's optimized for coding and tool calling
+    model: hhao/qwen2.5-coder-tools
+    # Temperature: 0.0 for deterministic JSON output (recommended for tool calling)
+    # Lower temperature = more predictable tool call formatting
+    temperature: 0.0
     max_tokens: 4096
     timeout: 300
   
@@ -48,25 +51,12 @@ agent:
   
   # System prompt template with placeholders:
   # - {workspace_base}: Workspace base path
-  # - {tools}: MCP servers with tools (format: "tool : server_name - description - tool1, tool2, ...")
+  # - {tools}: MCP servers with tools (format: "server_name - whenever you need X - description - Available functions: ...")
+  # IMPORTANT: Clear system instructions help the model format tool calls correctly
+  # Temperature=0.0 ensures deterministic JSON output for tool calls
   system_prompt_template: |
-    You are a helpful coding assistant with access to tools via function calling.
-    
-    Workspace: {workspace_base}
-    
-    Available tools:
-    {tools}
-    
-    IMPORTANT: You have access to tools via function calling. When the user asks questions that require information or actions (like "what directory am I in?", "list files", "read a file", "what's in this folder?", etc.), you MUST call the appropriate tool. Do not say you don't have access - use the tools!
-    
-    Examples:
-    - User: "Em que pasta estamos?" → Use desktop_commander tool to get current directory
-    - User: "list files" → Use desktop_commander tool to list files
-    - User: "read file X" → Use desktop_commander tool to read the file
-    
-    For simple conversational questions that don't require tools, answer directly.
-    
-    The tool schemas and parameters are provided to you automatically via function calling - use them when needed.
+    You are a code agent that should help the user manage their repositories.
+    All repositories are in the system at {workspace_base}.
   
   mcp:
     # MCP servers via Docker
@@ -74,16 +64,16 @@ agent:
     # Images are pulled if not available, containers are started/stopped as needed
     # Each connection creates an ephemeral container using docker run -i --rm
     
-    # Desktop Commander MCP server - replaces filesystem, provides file operations and terminal commands
-    # See: https://hub.docker.com/r/mcp/desktop-commander
-    # Provides: read_file, write_file, execute_command, search_files, etc.
-    desktop_commander:
+    # Filesystem MCP server - official Docker MCP server for filesystem operations
+    # See: https://hub.docker.com/mcp/server/filesystem/overview
+    # Provides: list_directory, read_file, write_file, create_directory, move_file, search_files, etc.
+    filesystem:
       type: docker
       enabled: true
-      image: "mcp/desktop-commander:latest"
+      image: "mcp/filesystem:latest"
       volumes:
-        - "{{workspace.base_path}}:/workspace"
-      args: []
+        - "{{workspace.base_path}}:/projects"
+      args: ["/projects"]
       timeout: 5000
     
     # Playwright MCP server - browser automation (navigate, click, screenshot, etc.)

@@ -5,7 +5,7 @@ import asyncio
 import sys
 import tempfile
 from pathlib import Path
-sys.path.insert(0, '/home/gabriel-miranda/repos/forge-agent')
+# Project root is already in path when running from tests/
 
 from agent.config.loader import ConfigLoader
 from agent.runtime.mcp_client import get_mcp_manager
@@ -18,7 +18,7 @@ async def test_tool_direct():
     print("🔍 Test 3: Direct MCP tool call (write_file)...")
     
     # Load config
-    config_path = Path(__file__).parent.parent / "config" / "agent.ollama.yaml"
+    config_path = Path(__file__).parent.parent.parent / "config" / "agent.ollama.yaml"
     loader = ConfigLoader(config_path=str(config_path))
     config = loader.load()
     
@@ -36,10 +36,10 @@ async def test_tool_direct():
         print(f"   📄 Target file: {test_file}")
         
         # Call tool directly
-        print("   🔧 Calling desktop_commander_write_file...")
+        print("   🔧 Calling filesystem_write_file...")
         try:
             result = await manager.call_tool(
-                "desktop_commander_write_file",
+                "filesystem_write_file",
                 {
                     "path": str(test_file),
                     "content": "print('Hello, World!')",

@@ -23,7 +23,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from agent.config.loader import AgentConfig
 from agent.observability import get_logger, log_event
 from agent.runtime.bus import EventType, publish
-from agent.runtime.callbacks import ErrorHandlingCallbackHandler
+from agent.runtime.callbacks import ErrorHandlingCallbackHandler, ReasoningAndDebugCallbackHandler
 from agent.tools.base import ToolRegistry
 
 
@@ -114,15 +114,19 @@ class LangChainExecutor:
         # Models that support tools: qwen3:8b, devstral, granite4, command-r, etc.
         # Check: https://ollama.com/search?c=tools
         # Note: llama3.1 removed - tool calling does not work reliably
+        # Create ChatOllama instance with optimal settings for tool calling
+        # IMPORTANT: temperature=0.0 is recommended for deterministic JSON output in tool calls
+        # Lower temperature = more predictable tool call formatting
         self.langchain_llm = ChatOllama(
             model=config.llm.model,
             base_url=config.llm.base_url or "http://localhost:11434",
-            temperature=config.llm.temperature,
+            temperature=config.llm.temperature,  # Should be 0.0 for best tool calling results
             num_predict=config.llm.max_tokens,  # Ollama uses num_predict instead of max_tokens
             timeout=config.llm.timeout,
             # Note: Ollama tool calling format is handled automatically by LangChain's bind_tools()
             # The format expected by Ollama API is: {"type": "function", "function": {"name": "...", "arguments": {...}}}
             # LangChain converts this automatically when using bind_tools()
+            # IMPORTANT: Use langchain_ollama (not langchain_community) for best tool calling support
         )
         
         # Log connection info for debugging
@@ -157,8 +161,11 @@ class LangChainExecutor:
         # Get LangSmith callbacks if tracing is enabled
         langsmith_callbacks = self._get_langsmith_callbacks()
         
-        # Combine callbacks: error handling + LangSmith tracing
-        self.all_callbacks = [self.callback_handler]
+        # Initialize reasoning and debug callback for capturing reasoning, steps, and debug info
+        self.reasoning_callback = ReasoningAndDebugCallbackHandler(session_id=session_id)
+        
+        # Combine callbacks: error handling + reasoning/debug + LangSmith tracing
+        self.all_callbacks = [self.callback_handler, self.reasoning_callback]
         if langsmith_callbacks:
             self.all_callbacks.extend(langsmith_callbacks)
 
@@ -330,7 +337,8 @@ class LangChainExecutor:
                 tools=self.langchain_tools,
                 verbose=True,  # Enable verbose logging for debugging
                 max_iterations=self.max_iterations,  # Limit iterations to prevent infinite loops
-                handle_parsing_errors=True,  # Handle tool call parsing errors gracefully
+                handle_parsing_errors=True,  # Handle tool call parsing errors gracefully - enables auto-correction
+                return_intermediate_steps=True,  # Return intermediate steps for debugging and analysis
             )
             
             self.logger.info(
@@ -451,6 +459,102 @@ class LangChainExecutor:
     
     
     @staticmethod
+    def _generate_server_summary(server_name: str, tools: List[str]) -> str:
+        """Generate a detailed summary for an MCP server with usage guidance.
+        
+        Args:
+            server_name: Name of the MCP server
+            tools: List of tool names from this server
+            
+        Returns:
+            Formatted summary string with when to use and available functions
+        """
+        server_lower = server_name.lower()
+        
+        # Detailed server summaries with usage guidance
+        server_summaries = {
+            "desktop_commander": {
+                "when_to_use": "whenever you need filesystem and shell operations",
+                "description": "read/write files, list directories, create folders, execute commands, manage processes",
+            },
+            "playwright": {
+                "when_to_use": "whenever you need browser automation and e2e testing",
+                "description": "navigate pages, click elements, fill forms, take screenshots, test web applications",
+            },
+            "git": {
+                "when_to_use": "whenever you need git repository operations",
+                "description": "status, commit, branch, log, diff, checkout, merge, and other version control tasks",
+            },
+            "github": {
+                "when_to_use": "whenever you need GitHub API operations",
+                "description": "manage repositories, issues, pull requests, and GitHub resources",
+            },
+            "openapi": {
+                "when_to_use": "whenever you need OpenAPI/Swagger API operations",
+                "description": "validate documents, generate code snippets, get API operations",
+            },
+            "python_refactoring": {
+                "when_to_use": "whenever you need Python code refactoring and analysis",
+                "description": "analyze code, find issues, refactor functions, improve code quality",
+            },
+            "fetch": {
+                "when_to_use": "whenever you need to fetch web content or make HTTP requests",
+                "description": "download files, fetch URLs, retrieve web content",
+            },
+            "filesystem": {
+                "when_to_use": "whenever you need filesystem operations",
+                "description": "list directories, read/write files, create/delete directories, move/rename files",
+            },
+        }
+        
+        # Try to get detailed summary
+        if server_name in server_summaries:
+            summary = server_summaries[server_name]
+        elif server_lower in server_summaries:
+            summary = server_summaries[server_lower]
+        else:
+            # Generate generic summary
+            if "git" in server_lower:
+                summary = {
+                    "when_to_use": "whenever you need git operations",
+                    "description": "git repository operations and version control",
+                }
+            elif "browser" in server_lower or "playwright" in server_lower:
+                summary = {
+                    "when_to_use": "whenever you need browser automation",
+                    "description": "browser automation and testing",
+                }
+            elif "file" in server_lower or "fs" in server_lower or "commander" in server_lower:
+                summary = {
+                    "when_to_use": "whenever you need filesystem operations",
+                    "description": "filesystem and file operations",
+                }
+            elif "api" in server_lower or "openapi" in server_lower:
+                summary = {
+                    "when_to_use": "whenever you need API operations",
+                    "description": "API operations and management",
+                }
+            elif "refactor" in server_lower or "python" in server_lower:
+                summary = {
+                    "when_to_use": "whenever you need code refactoring",
+                    "description": "code refactoring and analysis",
+                }
+            elif "fetch" in server_lower or "web" in server_lower:
+                summary = {
+                    "when_to_use": "whenever you need web content fetching",
+                    "description": "web content fetching and HTTP requests",
+                }
+            else:
+                summary = {
+                    "when_to_use": f"whenever you need {server_name.replace('_', ' ')} operations",
+                    "description": f"{server_name.replace('_', ' ')} operations",
+                }
+        
+        # Format: "server_name - whenever you need X - description - available functions: func1, func2, ..."
+        tools_str = ", ".join(sorted(tools))
+        return f"{server_name} - {summary['when_to_use']} - {summary['description']} - Available functions: {tools_str}"
+    
+    @staticmethod
     def _generate_server_description(server_name: str, tools: List[str]) -> str:
         """Generate a description for an MCP server based on its name and tools.
         
@@ -461,44 +565,14 @@ class LangChainExecutor:
         Returns:
             Description string
         """
-        # Generate description based on server name and tools
-        server_lower = server_name.lower()
-        
-        # Common server descriptions
-        descriptions = {
-            "desktop_commander": "Handle filesystem and shell operations",
-            "playwright": "Handle browser e2e tests",
-            "git": "Handle git operations",
-            "github": "Handle GitHub API operations",
-            "openapi": "Handle OpenAPI/Swagger API operations",
-            "python_refactoring": "Handle Python code refactoring",
-            "fetch": "Handle web content fetching",
-        }
-        
-        # Try exact match first
-        if server_name in descriptions:
-            return descriptions[server_name]
-        
-        # Try lowercase match
-        if server_lower in descriptions:
-            return descriptions[server_lower]
-        
-        # Generate from server name
-        if "git" in server_lower:
-            return "Handle git operations"
-        elif "browser" in server_lower or "playwright" in server_lower:
-            return "Handle browser automation"
-        elif "file" in server_lower or "fs" in server_lower or "commander" in server_lower:
-            return "Handle filesystem operations"
-        elif "api" in server_lower or "openapi" in server_lower:
-            return "Handle API operations"
-        elif "refactor" in server_lower or "python" in server_lower:
-            return "Handle code refactoring"
-        elif "fetch" in server_lower or "web" in server_lower:
-            return "Handle web content operations"
-        else:
-            # Generic description
-            return f"Handle {server_name.replace('_', ' ')} operations"
+        # This method is kept for backward compatibility
+        # Use _generate_server_summary for detailed summaries
+        summary = LangChainExecutor._generate_server_summary(server_name, tools)
+        # Extract just the description part (between second and third dash)
+        parts = summary.split(" - ")
+        if len(parts) >= 3:
+            return parts[2]  # Return the description part
+        return summary
     
     @staticmethod
     async def format_system_prompt(
@@ -525,21 +599,65 @@ class LangChainExecutor:
         if hasattr(config, "workspace") and hasattr(config.workspace, "base_path"):
             workspace_base = config.workspace.base_path
         
-        # Get tools directly from MCP manager (grouped by server)
-        # This is more reliable than trying to extract server names from tool names
-        from agent.runtime.mcp_client import get_mcp_manager
+        # Get tools directly from YAML config (simplified approach)
+        # Read enabled MCP servers from config and use known tool mappings
+        all_mcp_configs = config.mcp or {}
         
-        mcp_manager = get_mcp_manager()
-        all_tools_by_server = mcp_manager.get_all_tools()
+        # Known tools for each MCP server (based on official MCP server documentation)
+        # This avoids dynamic queries and makes the system prompt generation faster and more reliable
+        known_tools_by_server: Dict[str, List[str]] = {
+            "filesystem": [
+                "list_directory", "read_file", "write_file", "create_directory",
+                "move_file", "search_files", "directory_tree", "edit_file",
+                "get_file_info", "list_allowed_directories", "read_multiple_files"
+            ],
+            "playwright": [
+                "navigate", "click", "fill_form", "take_screenshot", "evaluate",
+                "press_key", "select_option", "wait_for", "hover", "drag",
+                "file_upload", "handle_dialog", "console_messages", "network_requests",
+                "snapshot", "tabs", "resize", "close", "navigate_back", "run_code", "install"
+            ],
+            "openapi": [
+                "validate_document", "get_list_of_operations", "generate_curl_command",
+                "get_known_responses", "get_extraction_guidance"
+            ],
+            "python_refactoring": [
+                "analyze_python_file", "analyze_python_package", "find_long_functions",
+                "find_package_issues", "get_package_metrics", "analyze_security_and_patterns",
+                "tdd_refactoring_guidance", "test_coverage"
+            ],
+            "git": [
+                "status", "add", "commit", "log", "diff", "checkout", "create_branch",
+                "reset", "show", "diff_staged", "diff_unstaged", "init"
+            ],
+            "github": [
+                "list_repos", "get_repo", "create_repo", "list_issues", "create_issue",
+                "list_pulls", "create_pull", "get_user"
+            ],
+            "fetch": [
+                "fetch"
+            ],
+        }
         
-        # Format tools: "tool : server_name - description - tool1, tool2, ..."
+        # Build tools list from enabled servers in config
+        all_tools_by_server: Dict[str, List[str]] = {}
+        for server_name, mcp_config in all_mcp_configs.items():
+            if mcp_config.get("enabled") is False:
+                continue
+            
+            # Use known tools if available, otherwise use empty list
+            if server_name in known_tools_by_server:
+                all_tools_by_server[server_name] = known_tools_by_server[server_name]
+            else:
+                # For unknown servers, use server name as a generic tool
+                all_tools_by_server[server_name] = [server_name]
+        
+        # Format tools with detailed summaries: "server_name - whenever you need X - description - Available functions: func1, func2, ..."
         tools_list = []
         for server_name in sorted(all_tools_by_server.keys()):
-            mcp_tools = all_tools_by_server[server_name]
-            tool_names = [tool.name for tool in mcp_tools]
-            tools_str = ", ".join(sorted(tool_names))
-            description = LangChainExecutor._generate_server_description(server_name, tool_names)
-            tools_list.append(f"tool : {server_name} - {description} - {tools_str}")
+            tool_names = all_tools_by_server[server_name]
+            summary = LangChainExecutor._generate_server_summary(server_name, tool_names)
+            tools_list.append(summary)
         
         tools_str = "\n".join(tools_list) if tools_list else "No tools available"
         
@@ -548,21 +666,18 @@ class LangChainExecutor:
             template = config.system_prompt_template
         else:
             # Default template
-            template = """You are a helpful coding assistant with access to tools.
+            template = """You are a code agent that should help the user manage their repositories.
+All repositories are in the system at {workspace_base} and you have tools available to manipulate these repos.
 
-Workspace: {workspace_base}
+To manipulate the repos, you must use these tools in tool chaining. Show what you are thinking. Auto-correct yourself if necessary.
 
 Available tools:
-{tools}
-
-Use tools when the user asks you to perform actions. For simple questions, answer directly.
-
-The tool schemas and parameters are provided to you automatically - use them as needed."""
+{tools}"""
         
         # Format template with placeholders
         # Available variables:
         # - {workspace_base}: Workspace base path
-        # - {tools}: MCP servers with tools (format: "tool : server_name - description - tool1, tool2, ...")
+        # - {tools}: MCP servers with tools (format: "server_name - whenever you need X - description - Available functions: ...")
         formatted = template.format(
             workspace_base=workspace_base,
             tools=tools_str
@@ -748,40 +863,228 @@ The tool schemas and parameters are provided to you automatically - use them as 
                     extra={"session_id": self.session_id, "prompt_length": len(system_prompt_for_log)}
                 )
             
-            # Use AgentExecutor to run the agent
+            # Use AgentExecutor to run the agent with real-time streaming
             # AgentExecutor manages the tool calling loop automatically
             # Reference: _helpers/langchain/libs/langchain/langchain_classic/agents/tool_calling_agent/base.py
+            # We use astream_events for real-time streaming similar to LangChain issue #34654
+            # Reference: https://github.com/langchain-ai/langchain/issues/34654
             final_output = None
             accumulated_content = ""
+            intermediate_steps = []
+            last_chain_output = None
             
             # Prepare config for agent invocation (callbacks for observability)
             agent_config: Dict[str, Any] = {"callbacks": self.all_callbacks}
             
             try:
-                # Invoke AgentExecutor (synchronous invoke, but we're in async context)
-                # AgentExecutor.invoke() is synchronous, so we run it in executor
-                import asyncio
-                result = await asyncio.to_thread(
-                    self.agent_executor.invoke,
+                # Use astream_events for real-time streaming (similar to LangChain docs)
+                # This allows us to stream reasoning, tool calls, and LLM tokens in real-time
+                # astream_events yields events as they happen, allowing real-time updates
+                async for event in self.agent_executor.astream_events(
                     input_data,
+                    version="v2",
                     config=agent_config,
-                )
+                ):
+                    event_name = event.get("event", "")
+                    event_data = event.get("data", {})
+                    event_name_full = event.get("name", "")
+                    
+                    # Stream LLM tokens in real-time
+                    if event_name == "on_chat_model_stream":
+                        chunk = event_data.get("chunk")
+                        if chunk:
+                            # Handle different chunk types
+                            if hasattr(chunk, "content"):
+                                token = chunk.content
+                                if token:
+                                    accumulated_content += token
+                                    # Publish token stream event for real-time display
+                                    await publish(EventType.LLM_STREAM_TOKEN, {
+                                        "session_id": self.session_id,
+                                        "token": token,
+                                        "accumulated": accumulated_content,
+                                    })
+                            elif isinstance(chunk, dict):
+                                # Handle dict chunks
+                                content = chunk.get("content", "")
+                                if content:
+                                    accumulated_content += content
+                                    await publish(EventType.LLM_STREAM_TOKEN, {
+                                        "session_id": self.session_id,
+                                        "token": content,
+                                        "accumulated": accumulated_content,
+                                    })
+                    
+                    # Stream LLM start
+                    elif event_name == "on_chat_model_start":
+                        await publish(EventType.LLM_STREAM_START, {
+                            "session_id": self.session_id,
+                            "model": event_data.get("name", ""),
+                        })
+                    
+                    # Stream LLM end and capture reasoning
+                    elif event_name == "on_chat_model_end":
+                        llm_output = event_data.get("output", "")
+                        reasoning_content = None
+                        
+                        # Extract reasoning if available
+                        if hasattr(llm_output, "additional_kwargs"):
+                            reasoning_content = llm_output.additional_kwargs.get("reasoning_content")
+                        elif isinstance(llm_output, dict):
+                            additional_kwargs = llm_output.get("additional_kwargs", {})
+                            reasoning_content = additional_kwargs.get("reasoning_content")
+                        
+                        await publish(EventType.LLM_STREAM_END, {
+                            "session_id": self.session_id,
+                            "reasoning": str(reasoning_content) if reasoning_content else None,
+                        })
+                        
+                        # Also publish reasoning separately if found
+                        if reasoning_content:
+                            await publish(EventType.LLM_REASONING, {
+                                "session_id": self.session_id,
+                                "content": str(reasoning_content),
+                            })
+                    
+                    # Stream tool start
+                    elif event_name == "on_tool_start":
+                        tool_name = event.get("name", "") or event_name_full or event_data.get("name", "")
+                        tool_input = event_data.get("input", {})
+                        
+                        await publish(EventType.TOOL_STREAM_START, {
+                            "session_id": self.session_id,
+                            "tool": tool_name,
+                            "input": tool_input,
+                        })
+                        
+                        # Also publish as regular tool called event
+                        await publish(EventType.TOOL_CALLED, {
+                            "session_id": self.session_id,
+                            "tool": tool_name,
+                            "arguments": tool_input,
+                        })
+                    
+                    # Stream tool end
+                    elif event_name == "on_tool_end":
+                        tool_name = event_data.get("name", "") or event.get("name", "")
+                        tool_output = event_data.get("output", "")
+                        
+                        await publish(EventType.TOOL_STREAM_END, {
+                            "session_id": self.session_id,
+                            "tool": tool_name,
+                            "output": str(tool_output)[:500],  # Limit output length
+                        })
+                        
+                        # Also publish tool result
+                        await publish(EventType.TOOL_RESULT, {
+                            "session_id": self.session_id,
+                            "tool": tool_name,
+                            "output": str(tool_output)[:500],
+                            "success": True,
+                        })
+                    
+                    # Stream tool error
+                    elif event_name == "on_tool_error":
+                        tool_name = event_data.get("name", "") or event.get("name", "")
+                        error = event_data.get("error", "")
+                        
+                        await publish(EventType.TOOL_STREAM_ERROR, {
+                            "session_id": self.session_id,
+                            "tool": tool_name,
+                            "error": str(error),
+                        })
+                        
+                        # Also publish as tool result with error
+                        await publish(EventType.TOOL_RESULT, {
+                            "session_id": self.session_id,
+                            "tool": tool_name,
+                            "error": str(error),
+                            "success": False,
+                        })
+                    
+                    # Stream chain events - capture final output from AgentExecutor chain
+                    elif event_name == "on_chain_start":
+                        chain_name = event_name_full or event_data.get("name", "")
+                        if "AgentExecutor" in chain_name:
+                            await publish(EventType.EXECUTION_STARTED, {
+                                "session_id": self.session_id,
+                            })
+                        await publish(EventType.CHAIN_STREAM_START, {
+                            "session_id": self.session_id,
+                            "chain": chain_name,
+                        })
+                    
+                    elif event_name == "on_chain_end":
+                        chain_name = event_name_full or event_data.get("name", "")
+                        chain_output = event_data.get("output", {})
+                        
+                        # Capture final output from AgentExecutor
+                        if "AgentExecutor" in chain_name:
+                            if isinstance(chain_output, dict):
+                                if "output" in chain_output:
+                                    final_output = chain_output["output"]
+                                    last_chain_output = chain_output
+                                elif "messages" in chain_output:
+                                    # Extract from messages
+                                    messages = chain_output["messages"]
+                                    for msg in reversed(messages):
+                                        if hasattr(msg, "content") and msg.content:
+                                            final_output = msg.content
+                                            break
+                                        elif isinstance(msg, dict) and "content" in msg:
+                                            final_output = msg["content"]
+                                            break
+                            
+                            await publish(EventType.EXECUTION_COMPLETED, {
+                                "session_id": self.session_id,
+                                "success": True,
+                            })
+                        
+                        await publish(EventType.CHAIN_STREAM_END, {
+                            "session_id": self.session_id,
+                            "chain": chain_name,
+                        })
+                
+                # Use last_chain_output as result if available, otherwise use accumulated_content
+                if last_chain_output:
+                    result = last_chain_output
+                elif accumulated_content:
+                    result = {"output": accumulated_content}
+                else:
+                    # Fallback: invoke to get result (shouldn't happen with astream_events)
+                    self.logger.warning("No output from astream_events, falling back to invoke")
+                    import asyncio
+                    result = await asyncio.to_thread(
+                        self.agent_executor.invoke,
+                        input_data,
+                        config=agent_config,
+                    )
                 
                 self.logger.debug(
                     f"AgentExecutor result type={type(result)}, keys={list(result.keys()) if isinstance(result, dict) else 'N/A'}",
                     extra={"session_id": self.session_id}
                 )
                 
-                # Extract final output from AgentExecutor result
+                # Extract final output and intermediate steps from AgentExecutor result
                 # AgentExecutor returns a dict with "output" key containing the final response
+                # and "intermediate_steps" if return_intermediate_steps=True
                 # Reference: _helpers/langchain/libs/langchain/langchain_classic/agents/tool_calling_agent/base.py
+                intermediate_steps = []
                 if isinstance(result, dict):
-                    # AgentExecutor typically returns {"output": "..."}
+                    # AgentExecutor typically returns {"output": "...", "intermediate_steps": [...]}
                     if "output" in result:
                         final_output = result["output"]
                         self.logger.info(
                             f"✅ Extracted final output from AgentExecutor result['output']: {len(final_output) if final_output else 0} chars",
                             extra={"session_id": self.session_id}
+                        )
+                    
+                    # Extract intermediate steps if available
+                    if "intermediate_steps" in result:
+                        intermediate_steps = result["intermediate_steps"]
+                        self.logger.info(
+                            f"✅ Extracted {len(intermediate_steps)} intermediate steps",
+                            extra={"session_id": self.session_id, "steps_count": len(intermediate_steps)}
                         )
                     # Some versions may return "messages" key
                     elif "messages" in result:
@@ -883,6 +1186,9 @@ The tool schemas and parameters are provided to you automatically - use them as 
             # Save conversation to memory (for next interaction)
             self._save_context(user_message, final_output or "")
             
+            # Get reasoning and debug summary from callback
+            reasoning_debug_summary = self.reasoning_callback.get_summary()
+            
             duration = time.time() - start_time
             log_event(
                 self.logger,
@@ -891,12 +1197,42 @@ The tool schemas and parameters are provided to you automatically - use them as 
                 duration_ms=duration * 1000,
                 success=True,
                 response_length=len(final_output) if final_output else 0,
+                reasoning_steps=len(reasoning_debug_summary["reasoning_steps"]),
+                tool_calls=len(reasoning_debug_summary["tool_calls"]),
+                tool_errors=len(reasoning_debug_summary["tool_errors"]),
             )
             
+            # Build comprehensive result with reasoning, debug info, and steps
             return {
                 "success": True,
                 "response": final_output or "",
                 "messages": [],  # Memory handles message history internally
+                # Reasoning and thinking
+                "reasoning": {
+                    "steps": reasoning_debug_summary["reasoning_steps"],
+                    "count": len(reasoning_debug_summary["reasoning_steps"]),
+                },
+                # Debug information
+                "debug": {
+                    "llm_calls": reasoning_debug_summary["llm_calls"],
+                    "debug_info": reasoning_debug_summary["debug_info"],
+                    "summary": reasoning_debug_summary["summary"],
+                },
+                # Intermediate steps (from AgentExecutor)
+                "intermediate_steps": intermediate_steps,
+                # Tool execution details
+                "tools": {
+                    "calls": reasoning_debug_summary["tool_calls"],
+                    "errors": reasoning_debug_summary["tool_errors"],
+                    "calls_count": len(reasoning_debug_summary["tool_calls"]),
+                    "errors_count": len(reasoning_debug_summary["tool_errors"]),
+                },
+                # Auto-correction info
+                "auto_correction": {
+                    "enabled": True,  # handle_parsing_errors=True enables auto-correction
+                    "errors_encountered": len(reasoning_debug_summary["tool_errors"]),
+                    "retries_detected": len([e for e in reasoning_debug_summary["tool_errors"] if e.get("error")]),
+                },
             }
                 
         except Exception as e:
