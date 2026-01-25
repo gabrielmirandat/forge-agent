@@ -10,13 +10,21 @@ Tool-calling agents:
 - Callbacks provide observability and error handling
 """
 
+import json
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional
 
 from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
+from langchain_classic.agents.output_parsers.tools import (
+    ToolsAgentOutputParser,
+    parse_ai_message_to_tool_action,
+)
+from langchain_core.agents import AgentAction, AgentFinish
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.outputs import ChatGeneration, Generation
 # Memory modules removed - not available in LangChain 1.2.6
 # Will use manual message history management instead
 
@@ -25,6 +33,421 @@ from agent.observability import get_logger, log_event
 from agent.runtime.bus import EventType, publish
 from agent.runtime.callbacks import ErrorHandlingCallbackHandler, ReasoningAndDebugCallbackHandler
 from agent.tools.base import ToolRegistry
+
+
+class _JSONToolCallParserWrapper:
+    """Wrapper for LLM that parses JSON tool calls from text responses.
+    
+    Some models (like hhao/qwen2.5-coder-tools) return tool calls as JSON text
+    instead of structured tool_calls. This wrapper intercepts responses and
+    converts JSON tool calls to structured format.
+    
+    This wrapper delegates all attributes to the wrapped LLM to maintain
+    compatibility with LangChain's Runnable interface.
+    """
+    
+    def __init__(self, llm: Any, logger: Any, session_id: Optional[str] = None):
+        """Initialize JSON tool call parser wrapper.
+        
+        Args:
+            llm: LangChain LLM instance (with tools bound)
+            logger: Logger instance
+            session_id: Optional session ID for logging
+        """
+        self._llm = llm
+        self._logger = logger
+        self._session_id = session_id
+    
+    def _extract_json_from_text(self, text: str) -> Optional[Dict[str, Any]]:
+        """Extract JSON from text, handling markdown code blocks.
+        
+        Args:
+            text: Text that may contain JSON in code blocks or plain text
+            
+        Returns:
+            Parsed JSON dict or None if no valid JSON found
+        """
+        # Try to extract JSON from markdown code blocks (```json ... ``` or ``` ... ```)
+        json_pattern = r'```(?:json)?\s*(\{.*?\})\s*```'
+        matches = re.findall(json_pattern, text, re.DOTALL)
+        
+        if matches:
+            for match in matches:
+                try:
+                    parsed = json.loads(match)
+                    if "name" in parsed and "arguments" in parsed:
+                        return parsed
+                except json.JSONDecodeError:
+                    continue
+        
+        # Try to find JSON object in plain text (look for tool call pattern)
+        json_pattern = r'\{[^{}]*"name"[^{}]*"arguments"[^{}]*\{[^{}]*\}[^{}]*\}'
+        matches = re.findall(json_pattern, text, re.DOTALL)
+        
+        for match in matches:
+            try:
+                parsed = json.loads(match)
+                if "name" in parsed and "arguments" in parsed:
+                    return parsed
+            except json.JSONDecodeError:
+                continue
+        
+        return None
+    
+    def _inject_tool_calls(self, message: AIMessage) -> AIMessage:
+        """Inject tool calls into AIMessage if JSON tool call is found in content.
+        
+        The ToolsAgentOutputParser checks:
+        1. message.tool_calls (preferred)
+        2. message.additional_kwargs.get("tool_calls") (fallback)
+        
+        We inject into both to ensure compatibility.
+        
+        Args:
+            message: AIMessage that may contain JSON tool call in content
+            
+        Returns:
+            AIMessage with tool_calls injected if JSON was found
+        """
+        if not hasattr(message, "content") or not message.content:
+            return message
+        
+        content = str(message.content)
+        
+        # Check if content contains JSON tool call pattern
+        json_tool_call = self._extract_json_from_text(content)
+        
+        if json_tool_call:
+            tool_name = json_tool_call.get("name", "")
+            tool_args = json_tool_call.get("arguments", {})
+            
+            # Check if tool_calls already exists and is empty
+            if not (hasattr(message, "tool_calls") and message.tool_calls):
+                # Inject tool call in LangChain format
+                tool_call = {
+                    "name": tool_name,
+                    "args": tool_args,
+                    "id": f"parsed_{int(time.time() * 1000)}",
+                    "type": "tool_call"
+                }
+                
+                # Also inject in OpenAI format for additional_kwargs (ToolsAgentOutputParser checks this)
+                openai_tool_call = {
+                    "id": tool_call["id"],
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": json.dumps(tool_args) if not isinstance(tool_args, str) else tool_args
+                    }
+                }
+                
+                # Get existing additional_kwargs or create new dict
+                additional_kwargs = getattr(message, "additional_kwargs", {}) or {}
+                if "tool_calls" not in additional_kwargs:
+                    additional_kwargs["tool_calls"] = []
+                additional_kwargs["tool_calls"].append(openai_tool_call)
+                
+                # Create new AIMessage with tool_calls and additional_kwargs
+                try:
+                    new_message = message.model_copy(update={
+                        "tool_calls": [tool_call],
+                        "additional_kwargs": additional_kwargs
+                    })
+                except Exception:
+                    # Fallback: create new AIMessage
+                    new_message = AIMessage(
+                        content=message.content,
+                        tool_calls=[tool_call],
+                        additional_kwargs=additional_kwargs,
+                        response_metadata=getattr(message, "response_metadata", {})
+                    )
+                
+                self._logger.info(
+                    f"🔧 Parsed and injected JSON tool call: {tool_name}",
+                    extra={
+                        "session_id": self._session_id,
+                        "tool": tool_name,
+                        "tool_args": tool_args,  # Changed from "args" to avoid conflict with logging
+                    }
+                )
+                
+                return new_message
+        
+        return message
+    
+    def __getattr__(self, name: str) -> Any:
+        """Delegate all other attributes to the wrapped LLM."""
+        return getattr(self._llm, name)
+    
+    async def ainvoke(self, input: Any, config: Optional[Any] = None, **kwargs: Any) -> Any:
+        """Invoke LLM and parse JSON tool calls from response.
+        
+        Args:
+            input: Input to LLM
+            config: Optional config
+            **kwargs: Additional arguments
+            
+        Returns:
+            LLM response with tool_calls injected if JSON was found
+        """
+        self._logger.debug(
+            "🔍 Wrapper intercepting ainvoke call",
+            extra={"session_id": self._session_id}
+        )
+        response = await self._llm.ainvoke(input, config=config, **kwargs)
+        
+        # If response is an AIMessage, try to inject tool calls
+        if isinstance(response, AIMessage):
+            self._logger.debug(
+                f"🔍 Wrapper processing AIMessage response",
+                extra={"session_id": self._session_id, "content_preview": str(response.content)[:100]}
+            )
+            return self._inject_tool_calls(response)
+        
+        return response
+    
+    def invoke(self, input: Any, config: Optional[Any] = None, **kwargs: Any) -> Any:
+        """Invoke LLM synchronously and parse JSON tool calls from response.
+        
+        Args:
+            input: Input to LLM
+            config: Optional config
+            **kwargs: Additional arguments
+            
+        Returns:
+            LLM response with tool_calls injected if JSON was found
+        """
+        response = self._llm.invoke(input, config=config, **kwargs)
+        
+        # If response is an AIMessage, try to inject tool calls
+        if isinstance(response, AIMessage):
+            return self._inject_tool_calls(response)
+        
+        return response
+    
+    async def astream(self, input: Any, config: Optional[Any] = None, **kwargs: Any) -> Any:
+        """Stream LLM response and parse JSON tool calls from chunks.
+        
+        Args:
+            input: Input to LLM
+            config: Optional config
+            **kwargs: Additional arguments
+            
+        Yields:
+            LLM response chunks with tool_calls injected if JSON was found
+        """
+        accumulated_content = ""
+        async for chunk in self._llm.astream(input, config=config, **kwargs):
+            if isinstance(chunk, AIMessage):
+                accumulated_content += str(chunk.content) if chunk.content else ""
+                # Check if we have a complete JSON tool call
+                json_tool_call = self._extract_json_from_text(accumulated_content)
+                if json_tool_call and not (hasattr(chunk, "tool_calls") and chunk.tool_calls):
+                    # Inject tool call into chunk
+                    tool_name = json_tool_call.get("name", "")
+                    tool_args = json_tool_call.get("arguments", {})
+                    tool_call = {
+                        "name": tool_name,
+                        "args": tool_args,
+                        "id": f"parsed_{int(time.time() * 1000)}",
+                        "type": "tool_call"
+                    }
+                    try:
+                        chunk = chunk.model_copy(update={"tool_calls": [tool_call]})
+                    except Exception:
+                        pass
+            yield chunk
+
+
+class JSONToolCallParser(ToolsAgentOutputParser):
+    """Custom parser that extracts tool calls from JSON in message content.
+    
+    Extends ToolsAgentOutputParser to also check message.content for JSON tool calls
+    when tool_calls and additional_kwargs are empty. This handles models that return
+    JSON as text instead of structured tool_calls.
+    """
+    
+    def __init__(self, logger: Any, session_id: Optional[str] = None, **kwargs: Any):
+        """Initialize JSON tool call parser.
+        
+        Args:
+            logger: Logger instance
+            session_id: Optional session ID for logging
+            **kwargs: Additional arguments for parent class
+        """
+        super().__init__(**kwargs)
+        # Store logger and session_id in a way that doesn't conflict with Pydantic
+        object.__setattr__(self, "_logger", logger)
+        object.__setattr__(self, "_session_id", session_id)
+    
+    @property
+    def logger(self) -> Any:
+        """Get logger instance."""
+        return getattr(self, "_logger", None)
+    
+    @property
+    def session_id(self) -> Optional[str]:
+        """Get session ID."""
+        return getattr(self, "_session_id", None)
+    
+    def _extract_json_from_text(self, text: str) -> Optional[Dict[str, Any]]:
+        """Extract JSON from text, handling markdown code blocks.
+        
+        Args:
+            text: Text that may contain JSON in code blocks or plain text
+            
+        Returns:
+            Parsed JSON dict or None if no valid JSON found
+        """
+        # Try to extract JSON from markdown code blocks (```json ... ``` or ``` ... ```)
+        json_pattern = r'```(?:json)?\s*(\{.*?\})\s*```'
+        matches = re.findall(json_pattern, text, re.DOTALL)
+        
+        if matches:
+            for match in matches:
+                try:
+                    parsed = json.loads(match)
+                    if "name" in parsed and "arguments" in parsed:
+                        return parsed
+                except json.JSONDecodeError:
+                    continue
+        
+        # Try to find JSON object in plain text (look for tool call pattern)
+        json_pattern = r'\{[^{}]*"name"[^{}]*"arguments"[^{}]*\{[^{}]*\}[^{}]*\}'
+        matches = re.findall(json_pattern, text, re.DOTALL)
+        
+        for match in matches:
+            try:
+                parsed = json.loads(match)
+                if "name" in parsed and "arguments" in parsed:
+                    return parsed
+            except json.JSONDecodeError:
+                continue
+        
+        return None
+    
+    def parse_result(
+        self,
+        result: list[Generation],
+        *,
+        partial: bool = False,
+    ) -> list[AgentAction] | AgentFinish:
+        """Parse result, checking content for JSON tool calls if needed.
+        
+        Args:
+            result: List of generations
+            partial: Whether this is a partial result
+            
+        Returns:
+            List of AgentAction or AgentFinish
+        """
+        if not isinstance(result[0], ChatGeneration):
+            msg = "This output parser only works on ChatGeneration output"
+            raise ValueError(msg)
+        
+        message = result[0].message
+        
+        self.logger.debug(
+            f"🔍 JSONToolCallParser.parse_result called",
+            extra={
+                "session_id": self.session_id,
+                "has_tool_calls": bool(hasattr(message, "tool_calls") and message.tool_calls),
+                "has_additional_kwargs": bool(hasattr(message, "additional_kwargs") and message.additional_kwargs),
+                "content_preview": str(message.content)[:200] if hasattr(message, "content") else None,
+            }
+        )
+        
+        # First try the standard parsing (checks tool_calls and additional_kwargs)
+        try:
+            parsed = parse_ai_message_to_tool_action(message)
+            
+            self.logger.debug(
+                f"🔍 Standard parsing result: {type(parsed).__name__}",
+                extra={"session_id": self.session_id}
+            )
+            
+            # If we got AgentFinish but content might have tool calls, check it
+            if isinstance(parsed, AgentFinish):
+                # Check if content contains JSON tool call
+                if hasattr(message, "content") and message.content:
+                    content_str = str(message.content)
+                    json_tool_call = self._extract_json_from_text(content_str)
+                    
+                    if json_tool_call:
+                        # Inject tool call into message and re-parse
+                        tool_name = json_tool_call.get("name", "")
+                        tool_args = json_tool_call.get("arguments", {})
+                        
+                        self.logger.info(
+                            f"🔧 Found JSON tool call in content: {tool_name}",
+                            extra={
+                                "session_id": self.session_id,
+                                "tool": tool_name,
+                                "tool_args": tool_args,  # Changed from "args" to avoid conflict with logging
+                            }
+                        )
+                        
+                        tool_call = {
+                            "name": tool_name,
+                            "args": tool_args,
+                            "id": f"parsed_{int(time.time() * 1000)}",
+                            "type": "tool_call"
+                        }
+                        
+                        # Also inject in OpenAI format for additional_kwargs
+                        openai_tool_call = {
+                            "id": tool_call["id"],
+                            "type": "function",
+                            "function": {
+                                "name": tool_name,
+                                "arguments": json.dumps(tool_args) if not isinstance(tool_args, str) else tool_args
+                            }
+                        }
+                        
+                        additional_kwargs = getattr(message, "additional_kwargs", {}) or {}
+                        if "tool_calls" not in additional_kwargs:
+                            additional_kwargs["tool_calls"] = []
+                        additional_kwargs["tool_calls"].append(openai_tool_call)
+                        
+                        # Create new message with injected tool calls
+                        try:
+                            new_message = message.model_copy(update={
+                                "tool_calls": [tool_call],
+                                "additional_kwargs": additional_kwargs
+                            })
+                        except Exception:
+                            new_message = AIMessage(
+                                content=message.content,
+                                tool_calls=[tool_call],
+                                additional_kwargs=additional_kwargs,
+                                response_metadata=getattr(message, "response_metadata", {})
+                            )
+                        
+                        self.logger.info(
+                            f"✅ Injected tool call and re-parsing: {tool_name}",
+                            extra={
+                                "session_id": self.session_id,
+                                "tool": tool_name,
+                            }
+                        )
+                        
+                        # Re-parse with injected tool calls
+                        re_parsed = parse_ai_message_to_tool_action(new_message)
+                        self.logger.debug(
+                            f"🔍 Re-parsing result: {type(re_parsed).__name__}",
+                            extra={"session_id": self.session_id}
+                        )
+                        return re_parsed
+            
+            return parsed
+        except Exception as e:
+            self.logger.warning(
+                f"Error in JSON tool call parser: {e}",
+                extra={"session_id": self.session_id},
+                exc_info=True
+            )
+            # Fall back to standard parsing
+            return parse_ai_message_to_tool_action(message)
 
 
 class LangChainExecutor:
@@ -245,6 +668,10 @@ class LangChainExecutor:
                 # Default: just bind tools without tool_choice
                 self.langchain_llm_with_tools = self.langchain_llm.bind_tools(self.langchain_tools)
             
+            # Note: We don't apply _JSONToolCallParserWrapper here because it's not a Runnable
+            # and cannot be used in LCEL chains. Instead, we use JSONToolCallParser as a step
+            # in the chain to extract JSON tool calls from message content.
+            
             # Log tool names for debugging
             tool_names = [tool.name for tool in self.langchain_tools[:20]]  # First 20
             self.logger.info(
@@ -301,17 +728,42 @@ class LangChainExecutor:
             MessagesPlaceholder("agent_scratchpad"),
         ])
 
-        # Create agent using create_tool_calling_agent
+        # Create agent using create_tool_calling_agent with custom parser
         # According to LangChain documentation:
         # - llm: LLM with tools bound via bind_tools() (already done above)
         # - tools: List of tools for the agent to execute
         # - prompt: ChatPromptTemplate with agent_scratchpad MessagesPlaceholder
         # Reference: _helpers/langchain/libs/langchain/langchain_classic/agents/tool_calling_agent/base.py
         try:
-            self.agent = create_tool_calling_agent(
+            # Create agent with standard parser first
+            standard_agent = create_tool_calling_agent(
                 llm=self.langchain_llm_with_tools,  # Model with tools already bound via bind_tools()
                 tools=self.langchain_tools,  # Tools list
                 prompt=self.prompt_template,  # ChatPromptTemplate with required placeholders
+            )
+            
+            # Replace the ToolsAgentOutputParser with our custom JSON parser
+            # The agent is a Runnable chain, we need to replace the last step
+            # Standard chain: RunnablePassthrough | prompt | llm | ToolsAgentOutputParser()
+            # We'll create a custom chain with our parser
+            from langchain_core.runnables import RunnablePassthrough
+            from langchain_classic.agents.format_scratchpad.tools import format_to_tool_messages
+            
+            # Create custom agent with JSON parser
+            # Note: The wrapper is applied to langchain_llm_with_tools, but the parser
+            # needs to be in the chain to intercept the final output
+            custom_parser = JSONToolCallParser(self.logger, self.session_id)
+            
+            # Create the chain manually with our custom parser
+            # Standard chain: RunnablePassthrough | prompt | llm | parser
+            # The parser extracts JSON tool calls from message content when needed
+            self.agent = (
+                RunnablePassthrough.assign(
+                    agent_scratchpad=lambda x: format_to_tool_messages(x["intermediate_steps"]),
+                )
+                | self.prompt_template
+                | self.langchain_llm_with_tools  # LLM with tools bound (no wrapper needed)
+                | custom_parser  # Our custom parser that checks content for JSON tool calls
             )
             
             self.logger.info(
@@ -337,6 +789,8 @@ class LangChainExecutor:
                 tools=self.langchain_tools,
                 verbose=True,  # Enable verbose logging for debugging
                 max_iterations=self.max_iterations,  # Limit iterations to prevent infinite loops
+                max_execution_time=300.0,  # Maximum 5 minutes execution time
+                early_stopping_method="force",  # Force stop if max iterations reached
                 handle_parsing_errors=True,  # Handle tool call parsing errors gracefully - enables auto-correction
                 return_intermediate_steps=True,  # Return intermediate steps for debugging and analysis
             )
@@ -503,7 +957,7 @@ class LangChainExecutor:
             },
             "filesystem": {
                 "when_to_use": "whenever you need filesystem operations",
-                "description": "list directories, read/write files, create/delete directories, move/rename files",
+                "description": "list directories, read/write files, create/delete directories, move/rename files. IMPORTANT: Use /projects as the base path for all filesystem operations (e.g., /projects/forge-agent instead of ~/repos/forge-agent)",
             },
         }
         
@@ -670,6 +1124,10 @@ class LangChainExecutor:
 All repositories are in the system at {workspace_base} and you have tools available to manipulate these repos.
 
 To manipulate the repos, you must use these tools in tool chaining. Show what you are thinking. Auto-correct yourself if necessary.
+
+IMPORTANT: For simple conversational questions, respond directly without using any tools. Only use tools when you need to perform actual operations.
+
+IMPORTANT: When using filesystem tools, always use /projects as the base path (e.g., /projects/forge-agent, not ~/repos/forge-agent or /root/repos/forge-agent).
 
 Available tools:
 {tools}"""

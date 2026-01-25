@@ -3,10 +3,13 @@
 Provides error handling and observability for agent execution.
 """
 
+import json
+import re
 import time
 from typing import Any, Dict, List, Optional
 
 from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.messages import AIMessage
 from langchain_core.outputs import LLMResult
 
 from agent.observability import get_logger, log_event

@@ -20,7 +20,16 @@ from langchain_ollama import ChatOllama
 from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage
+from langchain_core.runnables import RunnablePassthrough
+from langchain_classic.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_mcp_adapters.client import MultiServerMCPClient
+
+# Import our custom parser
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from agent.runtime.langchain_executor import JSONToolCallParser
+from agent.observability import get_logger
 
 
 @pytest.fixture
@@ -99,7 +108,7 @@ async def test_model_mcp_tool_calling(model_name: str, test_workspace: Path):
             f"3. Use {test_workspace} as the workspace_base parameter for filesystem operations.\n"
             f'4. When the user says "Crie um hello world em python no diretorio atual", you MUST:\n'
             f'   - Choose a suitable file name (e.g., "hello-world.py").\n'
-            f"   - Call the write_file tool with that path, workspace_base={test_workspace}, and content \"print('Hello, World!')\".\n"
+            f'   - Call the write_file tool with path="/workspace/hello-world.py" (the workspace is mounted at /workspace), and content "print(\'Hello, World!\')".\n'
         )),
         MessagesPlaceholder("chat_history", optional=True),
         ("human", "{input}"),
@@ -109,11 +118,19 @@ async def test_model_mcp_tool_calling(model_name: str, test_workspace: Path):
     # Bind tools to LLM
     llm_with_tools = llm.bind_tools([write_tool])
     
-    # Create agent using create_tool_calling_agent
-    agent = create_tool_calling_agent(
-        llm=llm_with_tools,
-        tools=[write_tool],
-        prompt=prompt_template,
+    # Create agent with custom JSON parser for models that return JSON as text
+    # Use our custom parser that checks content for JSON tool calls
+    logger = get_logger("test", "test")
+    custom_parser = JSONToolCallParser(logger, "test")
+    
+    # Create agent chain manually with custom parser
+    agent = (
+        RunnablePassthrough.assign(
+            agent_scratchpad=lambda x: format_to_tool_messages(x["intermediate_steps"]),
+        )
+        | prompt_template
+        | llm_with_tools
+        | custom_parser
     )
     
     # Create AgentExecutor to run the agent
@@ -126,7 +143,8 @@ async def test_model_mcp_tool_calling(model_name: str, test_workspace: Path):
     )
     
     # Test with Portuguese prompt (same as original test)
-    prompt = "Crie um hello world em python no diretorio atual"
+    # Note: The MCP server maps test_workspace to /workspace inside the container
+    prompt = "Crie um hello world em python no diretorio atual. Use o path /workspace/hello-world.py"
     target_file = test_workspace / "hello-world.py"
     
     # Execute agent using AgentExecutor.ainvoke() (async version)
