@@ -1185,6 +1185,56 @@ Available tools:
             "chat_history": recent_messages,
         }
     
+    def _chunk_to_content_blocks(self, chunk: Any) -> List[Dict[str, Any]]:
+        """Convert a streaming chunk to content_blocks format.
+        
+        This follows the content_blocks pattern from model_stream.py:
+        - "reasoning" blocks for model reasoning/thinking
+        - "tool_call_chunk" blocks for tool calls
+        - "text" blocks for regular text content
+        
+        Args:
+            chunk: Streaming chunk from LLM (AIMessageChunk or similar)
+            
+        Returns:
+            List of content blocks with type and content
+        """
+        content_blocks = []
+        
+        # Check if chunk has content (text)
+        if hasattr(chunk, "content") and chunk.content:
+            content_blocks.append({
+                "type": "text",
+                "text": chunk.content
+            })
+        
+        # Check if chunk has tool_calls
+        if hasattr(chunk, "tool_calls") and chunk.tool_calls:
+            for tool_call in chunk.tool_calls:
+                content_blocks.append({
+                    "type": "tool_call_chunk",
+                    "tool_call": tool_call
+                })
+        
+        # Check for reasoning in response_metadata (if available)
+        if hasattr(chunk, "response_metadata"):
+            metadata = chunk.response_metadata
+            if metadata and isinstance(metadata, dict):
+                # Check for reasoning_content (Claude-style)
+                if "reasoning_content" in metadata:
+                    content_blocks.append({
+                        "type": "reasoning",
+                        "reasoning": metadata["reasoning_content"]
+                    })
+                # Check for reasoning (generic)
+                elif "reasoning" in metadata:
+                    content_blocks.append({
+                        "type": "reasoning",
+                        "reasoning": metadata["reasoning"]
+                    })
+        
+        return content_blocks
+    
     def _save_context(self, user_input: str, agent_output: str):
         """Save conversation context to message history.
         
@@ -1347,31 +1397,50 @@ Available tools:
                     event_data = event.get("data", {})
                     event_name_full = event.get("name", "")
                     
-                    # Stream LLM tokens in real-time
+                    # Stream LLM tokens in real-time with content_blocks pattern
+                    # This follows the content_blocks pattern from model_stream.py POC
+                    # Each chunk is converted to content_blocks with types: "reasoning", "tool_call_chunk", "text"
                     if event_name == "on_chat_model_stream":
                         chunk = event_data.get("chunk")
                         if chunk:
-                            # Handle different chunk types
-                            if hasattr(chunk, "content"):
-                                token = chunk.content
-                                if token:
-                                    accumulated_content += token
-                                    # Publish token stream event for real-time display
-                                    await publish(EventType.LLM_STREAM_TOKEN, {
+                            # Convert chunk to content_blocks format
+                            content_blocks = self._chunk_to_content_blocks(chunk)
+                            
+                            # Process each content block and publish events
+                            # Accumulate text tokens first
+                            text_tokens = []
+                            for block in content_blocks:
+                                if block["type"] == "reasoning" and (reasoning := block.get("reasoning")):
+                                    # Publish reasoning block
+                                    await publish(EventType.LLM_REASONING, {
                                         "session_id": self.session_id,
-                                        "token": token,
-                                        "accumulated": accumulated_content,
+                                        "content": reasoning,
                                     })
-                            elif isinstance(chunk, dict):
-                                # Handle dict chunks
-                                content = chunk.get("content", "")
-                                if content:
-                                    accumulated_content += content
-                                    await publish(EventType.LLM_STREAM_TOKEN, {
+                                elif block["type"] == "tool_call_chunk":
+                                    # Publish tool call chunk
+                                    tool_call = block.get("tool_call", {})
+                                    await publish(EventType.TOOL_CALLED, {
                                         "session_id": self.session_id,
-                                        "token": content,
-                                        "accumulated": accumulated_content,
+                                        "tool": tool_call.get("name", ""),
+                                        "arguments": tool_call.get("args", {}),
                                     })
+                                elif block["type"] == "text":
+                                    # Collect text tokens (don't publish individually to avoid duplication)
+                                    token = block.get("text", "")
+                                    if token:
+                                        text_tokens.append(token)
+                                        accumulated_content += token
+                            
+                            # Publish content_blocks event for structured streaming (includes all blocks)
+                            # This is the single source of truth - frontend processes this
+                            if content_blocks:
+                                await publish(EventType.LLM_STREAM_TOKEN, {
+                                    "session_id": self.session_id,
+                                    "content_blocks": content_blocks,  # Structured blocks pattern
+                                    "accumulated": accumulated_content,
+                                    # Also include token for backward compatibility (only text tokens)
+                                    "token": "".join(text_tokens) if text_tokens else None,
+                                })
                     
                     # Stream LLM start
                     elif event_name == "on_chat_model_start":
@@ -1391,6 +1460,88 @@ Available tools:
                         elif isinstance(llm_output, dict):
                             additional_kwargs = llm_output.get("additional_kwargs", {})
                             reasoning_content = additional_kwargs.get("reasoning_content")
+                        
+                        # Record LLM usage metrics
+                        if self.session_id:
+                            try:
+                                from agent.observability.llm_metrics import get_llm_metrics
+                                
+                                # Extract token usage from response
+                                prompt_tokens = 0
+                                completion_tokens = 0
+                                total_tokens = 0
+                                
+                                # Try multiple ways to get token usage from LangChain/Ollama response
+                                # Method 1: From event_data response_metadata
+                                response_metadata = event_data.get("response_metadata", {})
+                                if response_metadata:
+                                    # Ollama format (prompt_eval_count, eval_count)
+                                    if "prompt_eval_count" in response_metadata:
+                                        prompt_tokens = response_metadata.get("prompt_eval_count", 0) or 0
+                                    if "eval_count" in response_metadata:
+                                        completion_tokens = response_metadata.get("eval_count", 0) or 0
+                                    total_tokens = prompt_tokens + completion_tokens
+                                    
+                                    # Also check for usage object
+                                    if "usage" in response_metadata:
+                                        usage = response_metadata["usage"]
+                                        prompt_tokens = usage.get("prompt_tokens", prompt_tokens)
+                                        completion_tokens = usage.get("completion_tokens", completion_tokens)
+                                        total_tokens = usage.get("total_tokens", total_tokens)
+                                
+                                # Method 2: From llm_output.response_metadata (AIMessage)
+                                if hasattr(llm_output, "response_metadata"):
+                                    metadata = llm_output.response_metadata
+                                    if metadata:
+                                        # Ollama format
+                                        if "prompt_eval_count" in metadata and not prompt_tokens:
+                                            prompt_tokens = metadata.get("prompt_eval_count", 0) or 0
+                                        if "eval_count" in metadata and not completion_tokens:
+                                            completion_tokens = metadata.get("eval_count", 0) or 0
+                                        if prompt_tokens or completion_tokens:
+                                            total_tokens = prompt_tokens + completion_tokens
+                                
+                                # Method 3: From llm_output.usage_metadata (if available)
+                                if hasattr(llm_output, "usage_metadata"):
+                                    usage_meta = llm_output.usage_metadata
+                                    if usage_meta:
+                                        prompt_tokens = getattr(usage_meta, "input_tokens", prompt_tokens) or prompt_tokens
+                                        completion_tokens = getattr(usage_meta, "output_tokens", completion_tokens) or completion_tokens
+                                        total_tokens = prompt_tokens + completion_tokens
+                                
+                                # Get model name from event or config
+                                model_name = event_data.get("name", "")
+                                if not model_name and hasattr(llm_output, "response_metadata"):
+                                    metadata = llm_output.response_metadata
+                                    if metadata:
+                                        model_name = metadata.get("model", "")
+                                if not model_name:
+                                    model_name = self.config.llm.model if self.config.llm else "unknown"
+                                
+                                # Calculate response time if available
+                                response_time = None
+                                if hasattr(llm_output, "response_metadata"):
+                                    metadata = llm_output.response_metadata
+                                    if metadata and "response_time" in metadata:
+                                        response_time = metadata["response_time"]
+                                
+                                # Always record usage (even if tokens are 0) to track calls
+                                # This ensures we at least count the number of calls
+                                metrics = get_llm_metrics()
+                                metrics.record_usage(
+                                    session_id=self.session_id,
+                                    model=model_name,
+                                    prompt_tokens=prompt_tokens,
+                                    completion_tokens=completion_tokens,
+                                    total_tokens=total_tokens if total_tokens > 0 else None,
+                                    response_time=response_time,
+                                )
+                                self.logger.debug(
+                                    f"Recorded LLM metrics: model={model_name}, "
+                                    f"tokens={total_tokens}, calls=1, session={self.session_id}"
+                                )
+                            except Exception as e:
+                                self.logger.warning(f"Failed to track LLM metrics: {e}", exc_info=True)
                         
                         await publish(EventType.LLM_STREAM_END, {
                             "session_id": self.session_id,

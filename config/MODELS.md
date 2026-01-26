@@ -8,13 +8,18 @@ According to [Ollama's tool calling documentation](https://ollama.com/search?c=t
 
 ### Recommended Models
 
-1. **hhao/qwen2.5-coder-tools** (default)
+1. **qwen3:8b** (default)
    - ✅ Tested and working
-   - Excellent tool-calling support, optimized for coding
-   - Config: `agent.ollama.yaml` or `agent.ollama.qwen.yaml`
+   - Excellent tool-calling support, good balance of speed and quality
+   - Config: `agent.ollama.yaml` (default)
+   - To download: `ollama pull qwen3:8b`
+
+2. **hhao/qwen2.5-coder-tools**
+   - Alternative Qwen model optimized for coding
+   - Config: `agent.ollama.qwen.yaml`
    - To download: `ollama pull hhao/qwen2.5-coder-tools`
 
-2. **qwen2.5:14b**
+3. **qwen2.5:14b**
    - Larger Qwen model with excellent tool-calling support
    - Config: `agent.ollama.qwen14b.yaml`
    - To download: `ollama pull qwen2.5:14b`
@@ -44,13 +49,13 @@ According to [Ollama's tool calling documentation](https://ollama.com/search?c=t
    ```
 
 3. **Use the appropriate config file**:
-   - For hhao/qwen2.5-coder-tools: `config/agent.ollama.yaml` or `config/agent.ollama.qwen.yaml`
-   - For qwen3:8b: Use `config/agent.ollama.yaml` and change model to `qwen3:8b`
+   - For qwen3:8b (default): `config/agent.ollama.yaml`
+   - For hhao/qwen2.5-coder-tools: `config/agent.ollama.qwen.yaml`
    - For qwen2.5:14b: `config/agent.ollama.qwen14b.yaml`
 
 4. **Start the application** with the desired config:
    ```bash
-   # Using default (hhao/qwen2.5-coder-tools)
+   # Using default (qwen3:8b)
    python -m api.app
    
    # Or specify a different config

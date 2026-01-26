@@ -22,7 +22,7 @@ class LLMConfig(BaseModel):
 
     provider: str = Field(default="ollama", description="LLM provider name (only 'ollama' is supported)")
     base_url: str = Field(default="http://localhost:11434", description="Ollama API base URL")
-    model: str = Field(default="gpt-3.5-turbo", description="Model name")
+    model: str = Field(default="qwen3:8b", description="Model name")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="Temperature")
     max_tokens: int = Field(default=4096, gt=0, description="Max tokens")
     timeout: int = Field(default=300, gt=0, description="Request timeout in seconds")

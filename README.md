@@ -50,8 +50,8 @@ source .venv/bin/activate
 cd decisions/model-selection
 docker-compose up -d ollama
 
-# Pull the selected model
-docker exec phase1-ollama ollama pull qwen2.5-coder:7b
+# Pull the default model (qwen3:8b)
+docker exec phase1-ollama ollama pull qwen3:8b
 ```
 
 

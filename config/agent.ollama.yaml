@@ -14,8 +14,8 @@ agent:
     base_url: http://localhost:11434
     # Model selection for tool calling:
     # According to Ollama docs (https://ollama.com/search?c=tools), these models support tools:
-    # - hhao/qwen2.5-coder-tools (default) - Excellent tool-calling support, optimized for coding
-    # - qwen3:8b - Alternative Qwen model with tool support
+    # - qwen3:8b (default) - Excellent tool-calling support, good balance of speed and quality
+    # - hhao/qwen2.5-coder-tools - Alternative Qwen model optimized for coding
     # - qwen2.5:14b - Larger Qwen model (config: agent.ollama.qwen14b.yaml)
     #   Note: Model name may vary - check with: ollama list
     #   To download: ollama pull qwen2.5:14b
@@ -25,8 +25,8 @@ agent:
     # Note: Not all models support tool calling - check https://ollama.com/search?c=tools
     # Note: llama3.1 removed - tool calling does not work reliably with this model
     # Note: Model names may vary - verify with: ollama list
-    # Using hhao/qwen2.5-coder-tools as it's optimized for coding and tool calling
-    model: hhao/qwen2.5-coder-tools
+    # Using qwen3:8b as default - good balance of speed, quality, and tool-calling support
+    model: qwen3:8b
     # Temperature: 0.0 for deterministic JSON output (recommended for tool calling)
     # Lower temperature = more predictable tool call formatting
     temperature: 0.0

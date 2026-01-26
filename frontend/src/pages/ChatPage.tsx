@@ -8,52 +8,156 @@ Layout similar to ChatGPT:
 
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import ReactMarkdown from 'react-markdown';
 
-// Component to render message content with code blocks
-function MessageContent({ content }: { content: string }) {
-  const parts: (string | { type: 'code'; content: string })[] = [];
-  let lastIndex = 0;
-  const codeBlockRegex = /```([\s\S]*?)```/g;
-  let match;
+// CSS for blinking cursor animation
+const blinkStyle = document.createElement('style');
+blinkStyle.textContent = `
+  @keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+  }
+`;
+if (!document.head.querySelector('style[data-blink-cursor]')) {
+  blinkStyle.setAttribute('data-blink-cursor', 'true');
+  document.head.appendChild(blinkStyle);
+}
 
-  while ((match = codeBlockRegex.exec(content)) !== null) {
-    // Add text before code block
-    if (match.index > lastIndex) {
-      const text = content.slice(lastIndex, match.index);
-      if (text) {
-        parts.push(text);
+// Function to normalize markdown content - remove extra spaces and normalize line breaks
+function normalizeMarkdown(content: string): string {
+  // Split into lines
+  let lines = content.split('\n');
+  
+  // Remove trailing spaces from each line
+  lines = lines.map(line => line.trimEnd());
+  
+  // Remove multiple consecutive empty lines (keep max 1)
+  let normalized: string[] = [];
+  let emptyCount = 0;
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const isEmpty = line.trim() === '';
+    
+    if (isEmpty) {
+      emptyCount++;
+      // Keep only one empty line at a time
+      if (emptyCount === 1) {
+        normalized.push('');
+      }
+    } else {
+      emptyCount = 0;
+      // Fix list items - ensure proper spacing after numbers/bullets
+      // Pattern: "1. " or "- " at start of line (with optional spaces before)
+      const listItemMatch = line.match(/^(\s*)(\d+\.|\-|\*)\s*/);
+      if (listItemMatch) {
+        // Ensure single space after list marker
+        const indent = listItemMatch[1];
+        const marker = listItemMatch[2];
+        const rest = line.substring(listItemMatch[0].length).trim();
+        // Remove extra spaces in the content but preserve structure
+        const cleanedRest = rest.replace(/\s+/g, ' ');
+        // Only add if there's content after the marker
+        if (cleanedRest) {
+          normalized.push(`${indent}${marker} ${cleanedRest}`);
+        } else {
+          // If marker is alone, keep it but ensure proper format
+          normalized.push(`${indent}${marker}`);
+        }
+      } else {
+        // Check for lines that start with just a number (broken list items)
+        // Pattern: line starts with number followed by space but no period
+        const brokenNumberMatch = line.match(/^(\s*)(\d+)\s+(.+)$/);
+        if (brokenNumberMatch) {
+          // Fix broken list item - add period after number
+          const indent = brokenNumberMatch[1];
+          const number = brokenNumberMatch[2];
+          const content = brokenNumberMatch[3].trim().replace(/\s+/g, ' ');
+          normalized.push(`${indent}${number}. ${content}`);
+        } else {
+          // For non-list lines, normalize multiple spaces to single space
+          // But preserve leading spaces (for indentation)
+          const leadingSpaces = line.match(/^(\s*)/)?.[1] || '';
+          const content = line.trim();
+          // Normalize multiple spaces in content
+          const normalizedContent = content.replace(/\s+/g, ' ');
+          normalized.push(leadingSpaces + normalizedContent);
+        }
       }
     }
-    // Add code block
-    parts.push({ type: 'code', content: match[1].trim() });
-    lastIndex = match.index + match[0].length;
   }
+  
+  // Join back
+  let result = normalized.join('\n');
+  
+  // Remove multiple spaces (but preserve in code blocks and list markers)
+  // First, protect code blocks
+  const codeBlockRegex = /```[\s\S]*?```/g;
+  const codeBlocks: string[] = [];
+  result = result.replace(codeBlockRegex, (match) => {
+    codeBlocks.push(match);
+    return `__CODE_BLOCK_${codeBlocks.length - 1}__`;
+  });
+  
+  // Protect list markers (numbers and bullets)
+  const listMarkerRegex = /^(\s*)(\d+\.|\-|\*)\s+/gm;
+  const listMarkers: string[] = [];
+  result = result.replace(listMarkerRegex, (match) => {
+    listMarkers.push(match);
+    return `__LIST_MARKER_${listMarkers.length - 1}__`;
+  });
+  
+  // Normalize multiple spaces to single space
+  result = result.replace(/[ \t]{2,}/g, ' ');
+  
+  // Restore list markers
+  listMarkers.forEach((marker, index) => {
+    result = result.replace(`__LIST_MARKER_${index}__`, marker);
+  });
+  
+  // Restore code blocks
+  codeBlocks.forEach((block, index) => {
+    result = result.replace(`__CODE_BLOCK_${index}__`, block);
+  });
+  
+  return result.trim();
+}
 
-  // Add remaining text
-  if (lastIndex < content.length) {
-    parts.push(content.slice(lastIndex));
-  }
-
-  // If no code blocks found, return original content
-  if (parts.length === 0) {
-    return <>{content}</>;
-  }
-
+// Component to render message content with markdown support
+function MessageContent({ content, textColor = '#ececf1' }: { content: string; textColor?: string }) {
+  // Normalize content to remove extra spaces and line breaks
+  const normalizedContent = normalizeMarkdown(content);
+  
   return (
-    <>
-      {parts.map((part, index) => {
-        if (typeof part === 'string') {
-          return <span key={index}>{part}</span>;
-        } else {
+    <ReactMarkdown
+      components={{
+        // Style code blocks
+        code: ({ node, inline, className, children, ...props }) => {
+          if (inline) {
+            return (
+              <code
+                style={{
+                  background: '#2d2d2d',
+                  padding: '0.15em 0.3em',
+                  borderRadius: '3px',
+                  fontSize: '0.9em',
+                  fontFamily: "'Courier New', monospace",
+                  color: '#f8f8f2',
+                }}
+                {...props}
+              >
+                {children}
+              </code>
+            );
+          }
           return (
             <pre
-              key={index}
               style={{
                 background: '#1e1e1e',
-                padding: '1rem',
-                borderRadius: '6px',
+                padding: '0.75rem',
+                borderRadius: '4px',
                 overflowX: 'auto',
-                margin: '0.5rem 0',
+                margin: '0.25rem 0',
                 border: '1px solid #444',
               }}
             >
@@ -64,14 +168,75 @@ function MessageContent({ content }: { content: string }) {
                   color: '#d4d4d4',
                   whiteSpace: 'pre',
                 }}
+                {...props}
               >
-                {part.content}
+                {children}
               </code>
             </pre>
           );
-        }
-      })}
-    </>
+        },
+        // Style paragraphs - more compact
+        p: ({ children }) => (
+          <p style={{ margin: '0.25rem 0', lineHeight: '1.5', color: textColor }}>{children}</p>
+        ),
+        // Style headings - more compact
+        h1: ({ children }) => (
+          <h1 style={{ fontSize: '1.3rem', fontWeight: 'bold', margin: '0.5rem 0 0.25rem 0', color: textColor }}>{children}</h1>
+        ),
+        h2: ({ children }) => (
+          <h2 style={{ fontSize: '1.15rem', fontWeight: 'bold', margin: '0.4rem 0 0.2rem 0', color: textColor }}>{children}</h2>
+        ),
+        h3: ({ children }) => (
+          <h3 style={{ fontSize: '1.05rem', fontWeight: 'bold', margin: '0.3rem 0 0.15rem 0', color: textColor }}>{children}</h3>
+        ),
+        // Style lists - more compact
+        ul: ({ children }) => (
+          <ul style={{ margin: '0.25rem 0', paddingLeft: '1.25rem' }}>{children}</ul>
+        ),
+        ol: ({ children }) => (
+          <ol style={{ margin: '0.25rem 0', paddingLeft: '1.25rem' }}>{children}</ol>
+        ),
+        li: ({ children }) => (
+          <li style={{ margin: '0.15rem 0', color: textColor }}>{children}</li>
+        ),
+        // Style blockquotes - more compact
+        blockquote: ({ children }) => (
+          <blockquote
+            style={{
+              borderLeft: '3px solid #444',
+              paddingLeft: '0.75rem',
+              margin: '0.25rem 0',
+              color: '#aaa',
+              fontStyle: 'italic',
+            }}
+          >
+            {children}
+          </blockquote>
+        ),
+        // Style links
+        a: ({ children, href }) => (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: '#19c37d', textDecoration: 'underline' }}
+          >
+            {children}
+          </a>
+        ),
+        // Style strong/bold
+        strong: ({ children }) => (
+          <strong style={{ fontWeight: 'bold', color: textColor }}>{children}</strong>
+        ),
+        // Style emphasis/italic
+        em: ({ children }) => (
+          <em style={{ fontStyle: 'italic', color: textColor }}>{children}</em>
+        ),
+      }}
+      style={{ color: textColor }}
+    >
+      {content}
+    </ReactMarkdown>
   );
 }
 import {
@@ -101,6 +266,8 @@ export function ChatPage() {
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [input, setInput] = useState('');
+  const [streamingContent, setStreamingContent] = useState<string>(''); // Content being streamed in real-time
+  const [intermediateChunks, setIntermediateChunks] = useState<Array<{type: string; content: string; timestamp: number}>>([]); // Intermediate chunks (reasoning, tool calls, etc)
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
@@ -118,6 +285,7 @@ export function ChatPage() {
     switch (event.type) {
       case 'session.message.added':
         // Reload session to get new message
+        // loadSession will automatically clear streaming content if it matches final message
         if (currentSession) {
           loadSession(currentSession.session_id).catch(console.error);
         }
@@ -125,6 +293,7 @@ export function ChatPage() {
       
       case 'session.updated':
         // Reload session to get updates
+        // loadSession will automatically clear streaming content if it matches final message
         if (currentSession) {
           loadSession(currentSession.session_id).catch(console.error);
         }
@@ -158,28 +327,87 @@ export function ChatPage() {
         break;
       
       case 'llm.reasoning':
-        // LLM is reasoning/thinking - show in console
-        console.log('🤔 LLM reasoning:', event.properties.content || event.properties.message);
-        // Optionally show in UI
+        // LLM is reasoning/thinking - store as intermediate chunk
+        const reasoningContent = event.properties.content || event.properties.message;
+        console.log('🤔 LLM reasoning:', reasoningContent);
+        if (reasoningContent) {
+          setIntermediateChunks((prev) => [
+            ...prev,
+            { type: 'reasoning', content: String(reasoningContent), timestamp: Date.now() }
+          ]);
+        }
         break;
       
       case 'llm.stream.start':
-        // LLM generation started
+        // LLM generation started - initialize streaming content
         console.log('💬 LLM generation started');
+        setStreamingContent(''); // Reset streaming content for new message
+        setIntermediateChunks([]); // Reset intermediate chunks for new message
+        shouldAutoScrollRef.current = true; // Enable auto-scroll during streaming
         break;
       
       case 'llm.stream.token':
         // Real-time token streaming - update UI in real-time
-        console.log('💬 Token:', event.properties.token);
-        // You can update the UI here to show streaming response
+        // Process content_blocks pattern (preferred) or legacy token format
+        let newToken = '';
+        
+        if (event.properties.content_blocks) {
+          // Process content_blocks pattern (reasoning, tool_call_chunk, text)
+          const blocks = event.properties.content_blocks;
+          for (const block of blocks) {
+            if (block.type === 'reasoning' && block.reasoning) {
+              console.log('🤔 Reasoning:', block.reasoning);
+              // Store reasoning as intermediate chunk
+              setIntermediateChunks((prev) => [
+                ...prev,
+                { type: 'reasoning', content: block.reasoning, timestamp: Date.now() }
+              ]);
+            } else if (block.type === 'tool_call_chunk') {
+              console.log('🔧 Tool call chunk:', block.tool_call);
+              // Store tool call as intermediate chunk
+              const toolInfo = block.tool_call?.name || 'unknown';
+              const toolArgs = JSON.stringify(block.tool_call?.args || {});
+              setIntermediateChunks((prev) => [
+                ...prev,
+                { type: 'tool_call', content: `${toolInfo}(${toolArgs})`, timestamp: Date.now() }
+              ]);
+            } else if (block.type === 'text' && block.text) {
+              newToken += block.text; // Accumulate text tokens
+            }
+          }
+        } else if (event.properties.token) {
+          // Legacy token format (backward compatibility) - only use if content_blocks not available
+          newToken = event.properties.token;
+        }
+        
+        // Update streaming content in real-time (only if we have new tokens)
+        if (newToken) {
+          setStreamingContent((prev) => {
+            const updated = prev + newToken;
+            // Auto-scroll to bottom during streaming
+            setTimeout(() => {
+              if (shouldAutoScrollRef.current && messagesEndRef.current) {
+                messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+              }
+            }, 0);
+            return updated;
+          });
+        }
         break;
       
       case 'llm.stream.end':
-        // LLM generation completed
+        // LLM generation completed - keep streaming content visible for now
         console.log('💬 LLM generation completed');
         if (event.properties.reasoning) {
           console.log('🤔 Reasoning:', event.properties.reasoning);
+          // Store final reasoning if available
+          setIntermediateChunks((prev) => [
+            ...prev,
+            { type: 'reasoning', content: event.properties.reasoning, timestamp: Date.now() }
+          ]);
         }
+        // Don't clear streaming content immediately - wait for session.updated
+        // The session.updated handler will clear it when final message arrives
         break;
       
       case 'tool.decision':
@@ -194,9 +422,18 @@ export function ChatPage() {
       
       case 'tool.called':
       case 'tool.stream.start':
-        // Tool is being called - show progress
-        console.log(`🔧 Calling tool: ${event.properties.tool}`, event.properties.arguments || event.properties.input);
-        // Optionally show in UI
+        // Tool is being called - store as intermediate chunk
+        const toolName = event.properties.tool || 'unknown';
+        const toolArgs = event.properties.arguments || event.properties.input || {};
+        console.log(`🔧 Calling tool: ${toolName}`, toolArgs);
+        setIntermediateChunks((prev) => [
+          ...prev,
+          { 
+            type: 'tool_call', 
+            content: `${toolName}(${JSON.stringify(toolArgs)})`, 
+            timestamp: Date.now() 
+          }
+        ]);
         break;
       
       case 'tool.stream.end':
@@ -259,6 +496,27 @@ export function ChatPage() {
       const session = await getSession(id);
       setCurrentSession(session);
       
+      // Check if we should clear streaming content to avoid duplication
+      // If there's a new assistant message that matches the streaming content, clear it
+      if (streamingContent && session.messages.length > 0) {
+        const lastMessage = session.messages[session.messages.length - 1];
+        if (lastMessage.role === 'assistant') {
+          // Compare streaming content with final message (normalize whitespace)
+          const streamingNormalized = streamingContent.trim().replace(/\s+/g, ' ');
+          const messageNormalized = lastMessage.content.trim().replace(/\s+/g, ' ');
+          
+          // If they're similar (within 90% match), clear streaming content
+          // This handles cases where final message might have slight differences
+          if (messageNormalized.length > 0 && 
+              (streamingNormalized === messageNormalized || 
+               messageNormalized.includes(streamingNormalized.substring(0, Math.min(100, streamingNormalized.length))) ||
+               streamingNormalized.includes(messageNormalized.substring(0, Math.min(100, messageNormalized.length))))) {
+            // Clear streaming content since final message is now available
+            setStreamingContent('');
+          }
+        }
+      }
+      
       // Restore sidebar scroll position after state update
       setTimeout(() => {
         if (sidebarRef.current) {
@@ -297,6 +555,7 @@ export function ChatPage() {
 
     const messageContent = input.trim();
     setInput('');
+    setStreamingContent(''); // Clear any previous streaming content
     setSending(true);
     setError(null);
 
@@ -719,7 +978,7 @@ export function ChatPage() {
               style={{
                 flex: 1,
                 overflowY: 'auto',
-                padding: '2rem',
+                padding: '1rem 1.5rem',
                 maxWidth: '768px',
                 margin: '0 auto',
                 width: '100%',
@@ -729,17 +988,17 @@ export function ChatPage() {
                 <div
                   key={message.message_id}
                   style={{
-                    marginBottom: '2rem',
+                    marginBottom: '1rem',
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: '0.5rem',
+                    gap: '0.25rem',
                   }}
                 >
                   <div
                     style={{
                       fontWeight: '600',
                       fontSize: '0.875rem',
-                      color: message.role === 'user' ? '#19c37d' : '#fff',
+                      color: message.role === 'user' ? '#19c37d' : '#8b9dc3',
                     }}
                   >
                     {message.role === 'user' ? 'You' : 'Assistant'}
@@ -747,15 +1006,85 @@ export function ChatPage() {
                   <div
                     style={{
                       whiteSpace: 'pre-wrap',
-                      lineHeight: '1.6',
-                      color: '#ececf1',
+                      lineHeight: '1.5',
                     }}
                   >
-                    <MessageContent content={message.content} />
+                    <MessageContent 
+                      content={message.content} 
+                      textColor={message.role === 'user' ? '#d4d4d4' : '#ececf1'}
+                    />
                   </div>
                   {/* Removed plan_result display - no longer used with direct tool calling */}
                 </div>
               ))}
+              {/* Show streaming content in real-time - keep it visible even after completion */}
+              {streamingContent && (
+                <div
+                  style={{
+                    marginBottom: '1rem',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.25rem',
+                  }}
+                >
+                  <div
+                    style={{
+                      fontWeight: '600',
+                      fontSize: '0.875rem',
+                      color: '#8b9dc3',
+                    }}
+                  >
+                    Assistant
+                  </div>
+                  <div
+                    style={{
+                      whiteSpace: 'pre-wrap',
+                      lineHeight: '1.5',
+                    }}
+                  >
+                    <MessageContent content={streamingContent} textColor="#ececf1" />
+                  </div>
+                  {/* Show intermediate chunks (reasoning, tool calls) in smaller, gray text */}
+                  {intermediateChunks.length > 0 && (
+                    <div
+                      style={{
+                        marginTop: '0.5rem',
+                        paddingTop: '0.5rem',
+                        borderTop: '1px solid #444',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '0.25rem',
+                      }}
+                    >
+                      {intermediateChunks.map((chunk, index) => (
+                        <div
+                          key={index}
+                          style={{
+                            fontSize: '0.75rem',
+                            color: '#888',
+                            fontFamily: 'monospace',
+                            whiteSpace: 'pre-wrap',
+                            lineHeight: '1.4',
+                          }}
+                        >
+                          {chunk.type === 'reasoning' && (
+                            <span>
+                              <span style={{ color: '#666' }}>🤔 Reasoning: </span>
+                              {chunk.content}
+                            </span>
+                          )}
+                          {chunk.type === 'tool_call' && (
+                            <span>
+                              <span style={{ color: '#666' }}>🔧 Tool: </span>
+                              {chunk.content}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               <div ref={messagesEndRef} />
             </div>
 
