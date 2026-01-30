@@ -187,6 +187,9 @@ class DockerManager:
         # Add GPU support if requested
         if gpu:
             docker_cmd.extend(["--gpus", "all"])
+            # Add environment variables for GPU support
+            docker_cmd.extend(["-e", "OLLAMA_NUM_GPU=-1"])  # Use all available GPUs
+            docker_cmd.extend(["-e", "CUDA_VISIBLE_DEVICES=0"])  # Use first GPU
 
         # Add volume for model storage
         docker_cmd.extend(["-v", "ollama-data:/root/.ollama"])

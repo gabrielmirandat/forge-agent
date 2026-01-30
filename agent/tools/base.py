@@ -357,6 +357,17 @@ class ToolRegistry:
             f"Loaded {len(tools)} LangChain tools from {len(mcp_configs)} MCP server(s)",
             extra={"servers": list(mcp_configs.keys()), "tools_count": len(tools)},
         )
+        
+        # Add RAG tool if it exists in registry
+        rag_tool = self._tools.get("rag_documentation_search")
+        if rag_tool and rag_tool.enabled:
+            try:
+                from agent.tools.rag_tool import create_rag_langchain_tool
+                rag_langchain_tool = create_rag_langchain_tool(rag_tool)
+                tools.append(rag_langchain_tool)
+                logger.info("Added RAG documentation search tool to LangChain tools")
+            except Exception as e:
+                logger.warning(f"Failed to add RAG tool to LangChain tools: {e}")
 
         return tools
 

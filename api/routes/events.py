@@ -9,11 +9,13 @@ import json
 import time
 from typing import Set
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 from agent.observability import get_logger
 from agent.runtime.bus import Event, EventType, get_bus
+from agent.runtime.event_helpers import session_exists
+from api.dependencies import get_storage
 
 router = APIRouter()
 logger = get_logger("api.events", "api")
@@ -41,8 +43,11 @@ def _format_event_data(event: Event) -> dict:
     }
 
 
-async def _event_stream():
+async def _event_stream(session_id: str):
     """Stream events via SSE.
+    
+    Args:
+        session_id: Session ID to filter events. Only events for this session will be sent.
     
     Yields:
         SSE-formatted event strings
@@ -51,12 +56,27 @@ async def _event_stream():
     queue = asyncio.Queue()
     _active_sse_connections.add(queue)
     
-    logger.info("SSE connection established")
+    # Get storage for session existence checks
+    storage = get_storage()
+    
+    # Verify session exists before starting stream
+    if not await session_exists(storage, session_id):
+        logger.warning(f"SSE connection rejected - session does not exist: {session_id}")
+        error_event = Event(
+            type=EventType.SESSION_UPDATED,
+            properties={"type": "server.error", "error": "Session not found", "session_id": session_id},
+            timestamp=time.time(),
+        )
+        data = json.dumps(_format_event_data(error_event))
+        yield f"data: {data}\n\n"
+        return
+    
+    logger.info(f"SSE connection established (session_id={session_id})")
     
     # Send initial connection event
     initial_event = Event(
         type=EventType.SESSION_UPDATED,
-        properties={"type": "server.connected"},
+        properties={"type": "server.connected", "session_id": session_id},
         timestamp=time.time(),
     )
     data = json.dumps(_format_event_data(initial_event))
@@ -66,7 +86,32 @@ async def _event_stream():
     bus = get_bus()
     
     async def event_handler(event: Event):
-        """Handle event from bus."""
+        """Handle event from bus - filter by session_id (required)."""
+        event_session_id = event.properties.get("session_id")
+        
+        # If event has no session_id, skip it (unless it's a system event)
+        if not event_session_id:
+            # Allow system events (heartbeat, connection, etc.) only if they match our session
+            event_type = event.properties.get("type")
+            if event_type in ("server.connected", "server.heartbeat"):
+                # Check if the event's session_id matches (if present in properties)
+                if event.properties.get("session_id") == session_id:
+                    try:
+                        await queue.put(event)
+                    except Exception as e:
+                        logger.error(f"Error queuing event: {e}")
+            return
+        
+        # Only queue events for the specified session
+        if event_session_id != session_id:
+            return
+        
+        # Verify session still exists before queuing (prevents 404s)
+        if not await session_exists(storage, event_session_id):
+            logger.debug(f"Skipping event for deleted session: {event_session_id}")
+            return
+        
+        # Queue the event
         try:
             await queue.put(event)
         except Exception as e:
@@ -92,7 +137,7 @@ async def _event_stream():
                 if time.time() - last_heartbeat >= heartbeat_interval:
                     heartbeat_event = Event(
                         type=EventType.SESSION_UPDATED,
-                        properties={"type": "server.heartbeat"},
+                        properties={"type": "server.heartbeat", "session_id": session_id},
                         timestamp=time.time(),
                     )
                     data = json.dumps(_format_event_data(heartbeat_event))
@@ -234,19 +279,26 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 @router.get("/events/event")
-async def event_endpoint_sse():
+async def event_endpoint_sse(session_id: str = Query(..., description="Session ID to filter events (required)")):
     """SSE endpoint for subscribing to events.
     
-    Streams all events from the Bus via Server-Sent Events.
-    Used for real-time updates of agent reasoning and execution.
+    Streams events from the Bus via Server-Sent Events.
+    Only events for the specified session are sent.
+    This prevents sending events from deleted or other sessions.
+    
+    Args:
+        session_id: Session ID to filter events (required). Only events for this session will be sent.
     
     Returns:
         StreamingResponse with SSE events
+    
+    Raises:
+        HTTPException: If session_id is not provided or session does not exist
     """
-    logger.info("SSE connection request received")
+    logger.info(f"SSE connection request received (session_id={session_id})")
     
     return StreamingResponse(
-        _event_stream(),
+        _event_stream(session_id=session_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

@@ -53,6 +53,13 @@ interface ObservabilityData {
       active_sessions: number;
       last_used_at?: number | null;
       model_avg_response_times?: Record<string, number>;
+      per_model?: Record<string, {
+        total_tokens: number;
+        total_calls: number;
+        active_sessions: number;
+        avg_response_time?: number | null;
+        last_used_at?: number | null;
+      }>;
     };
   };
 }
@@ -370,7 +377,7 @@ export function ObservabilityPanel() {
         )}
 
         {/* GPU */}
-        {system.gpu?.available && (
+        {system.gpu && (system.gpu.available || system.gpu.name || system.gpu.utilization_percent !== undefined) && (
           <div style={{ marginBottom: '1rem' }}>
             <div style={{ marginBottom: '0.5rem', fontWeight: '500' }}>GPU</div>
             {system.gpu.name && (
@@ -406,6 +413,11 @@ export function ObservabilityPanel() {
                 </div>
               </div>
             )}
+            {system.gpu.memory_used_mb !== undefined && system.gpu.memory_total_mb !== undefined && (
+              <div style={{ fontSize: '0.8rem', color: '#aaa', marginBottom: '0.25rem' }}>
+                Memory: {(system.gpu.memory_used_mb / 1024).toFixed(1)} GB / {(system.gpu.memory_total_mb / 1024).toFixed(1)} GB
+              </div>
+            )}
             {system.gpu.temperature_celsius !== undefined && (
               <div style={{ fontSize: '0.8rem', color: '#aaa' }}>
                 Temp: {system.gpu.temperature_celsius.toFixed(1)}°C
@@ -418,36 +430,85 @@ export function ObservabilityPanel() {
                   ` / ${system.gpu.power_limit_watts.toFixed(1)}W`}
               </div>
             )}
+            {system.gpu.error && (
+              <div style={{ fontSize: '0.75rem', color: '#f87171' }}>
+                Error: {system.gpu.error}
+              </div>
+            )}
+            {!system.gpu.available && !system.gpu.name && system.gpu.utilization_percent === undefined && (
+              <div style={{ fontSize: '0.8rem', color: '#888' }}>
+                GPU not available
+              </div>
+            )}
           </div>
         )}
 
         {/* Global LLM Metrics */}
         <div style={{ marginBottom: '1rem' }}>
           <div style={{ marginBottom: '0.5rem', fontWeight: '500' }}>LLM</div>
-          {globalLLM.models_used.length > 0 && (
-            <div style={{ fontSize: '0.8rem', color: '#aaa', marginBottom: '0.25rem' }}>
-              Models: {globalLLM.models_used.join(', ')}
+          {globalLLM.per_model && Object.keys(globalLLM.per_model).length > 0 ? (
+            <div style={{ fontSize: '0.75rem', overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #333' }}>
+                    <th style={{ textAlign: 'left', padding: '0.25rem 0.5rem', color: '#888', fontWeight: '600' }}>Model</th>
+                    <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#888', fontWeight: '600' }}>Tokens</th>
+                    <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#888', fontWeight: '600' }}>Calls</th>
+                    <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#888', fontWeight: '600' }}>Sessions</th>
+                    <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#888', fontWeight: '600' }}>Last Used</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(globalLLM.per_model).map(([model, metrics]) => {
+                    const formatLastUsed = (timestamp?: number | null): string => {
+                      if (!timestamp) return 'Never';
+                      const now = Date.now() / 1000; // Current time in seconds
+                      const diff = now - timestamp;
+                      if (diff < 60) return `${Math.floor(diff)}s ago`;
+                      if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+                      if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+                      return `${Math.floor(diff / 86400)}d ago`;
+                    };
+                    
+                    return (
+                      <tr key={model} style={{ borderBottom: '1px solid #2a2a2a' }}>
+                        <td style={{ padding: '0.25rem 0.5rem', color: '#aaa', wordBreak: 'break-word' }}>{model}</td>
+                        <td style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#aaa' }}>
+                          {metrics.total_tokens.toLocaleString()}
+                        </td>
+                        <td style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#aaa' }}>
+                          {metrics.total_calls}
+                        </td>
+                        <td style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#aaa' }}>
+                          {metrics.active_sessions}
+                        </td>
+                        <td style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#aaa', fontSize: '0.7rem' }}>
+                          {formatLastUsed(metrics.last_used_at)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-          )}
-          {globalLLM.model_avg_response_times && Object.keys(globalLLM.model_avg_response_times).length > 0 && (
-            <div style={{ fontSize: '0.8rem', color: '#aaa', marginBottom: '0.25rem' }}>
-              Avg Response Time:
-              {Object.entries(globalLLM.model_avg_response_times).map(([model, avgTime]) => (
-                <div key={model} style={{ marginLeft: '0.5rem', fontSize: '0.75rem' }}>
-                  {model}: {avgTime.toFixed(2)}s
+          ) : (
+            <>
+              {globalLLM.models_used.length > 0 && (
+                <div style={{ fontSize: '0.8rem', color: '#aaa', marginBottom: '0.25rem' }}>
+                  Models: {globalLLM.models_used.join(', ')}
                 </div>
-              ))}
-            </div>
+              )}
+              <div style={{ fontSize: '0.8rem', color: '#aaa' }}>
+                Total Tokens: {globalLLM.total_tokens.toLocaleString()}
+              </div>
+              <div style={{ fontSize: '0.8rem', color: '#aaa' }}>
+                Total Calls: {globalLLM.total_calls}
+              </div>
+              <div style={{ fontSize: '0.8rem', color: '#aaa' }}>
+                Active Sessions: {globalLLM.active_sessions}
+              </div>
+            </>
           )}
-          <div style={{ fontSize: '0.8rem', color: '#aaa' }}>
-            Total Tokens: {globalLLM.total_tokens.toLocaleString()}
-          </div>
-          <div style={{ fontSize: '0.8rem', color: '#aaa' }}>
-            Total Calls: {globalLLM.total_calls}
-          </div>
-          <div style={{ fontSize: '0.8rem', color: '#aaa' }}>
-            Active Sessions: {globalLLM.active_sessions}
-          </div>
         </div>
       </div>
     </div>

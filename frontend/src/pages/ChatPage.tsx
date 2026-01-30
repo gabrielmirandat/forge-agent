@@ -6,7 +6,7 @@ Layout similar to ChatGPT:
 - Input at bottom
 */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 
@@ -125,15 +125,16 @@ function normalizeMarkdown(content: string): string {
 
 // Component to render message content with markdown support
 function MessageContent({ content, textColor = '#ececf1' }: { content: string; textColor?: string }) {
-  // Normalize content to remove extra spaces and line breaks
-  const normalizedContent = normalizeMarkdown(content);
+  // Normalize content to remove extra spaces and line breaks - memoize to avoid re-computation
+  const normalizedContent = useMemo(() => normalizeMarkdown(content), [content]);
   
   return (
     <ReactMarkdown
       components={{
         // Style code blocks
-        code: ({ node, inline, className, children, ...props }) => {
-          if (inline) {
+        code: ({ className, children, ...props }: any) => {
+          const isInline = !className;
+          if (isInline) {
             return (
               <code
                 style={{
@@ -233,9 +234,8 @@ function MessageContent({ content, textColor = '#ececf1' }: { content: string; t
           <em style={{ fontStyle: 'italic', color: textColor }}>{children}</em>
         ),
       }}
-      style={{ color: textColor }}
     >
-      {content}
+      {normalizedContent}
     </ReactMarkdown>
   );
 }
@@ -272,51 +272,231 @@ export function ChatPage() {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(false); // Start with auto-scroll disabled
+  const loadingSessionRef = useRef<string | null>(null); // Track which session is currently loading
+  const loadSessionTimeoutRef = useRef<number | null>(null); // Debounce timer for loadSession
+  const failedSessionsRef = useRef<Set<string>>(new Set()); // Track sessions that failed (404)
+  const currentSessionRef = useRef<SessionResponse | null>(null); // Ref to track current session for closures
   
-  // Handle WebSocket events
-  const handleEvent = (event: Event) => {
-    console.log('Event received:', event);
-    
-    // Only process events for current session
-    if (event.properties.session_id && currentSession && event.properties.session_id !== currentSession.session_id) {
+  // Load sessions list - memoized to avoid unnecessary re-renders
+  const loadSessions = useCallback(async () => {
+    try {
+      const response = await listSessions(50, 0);
+      // Filter out sessions that already failed (404) to prevent unnecessary load attempts
+      const validSessions = response.sessions.filter(
+        (s) => !failedSessionsRef.current.has(s.session_id)
+      );
+      setSessions((prevSessions) => {
+        // Only update if sessions actually changed to avoid re-renders
+        if (prevSessions.length === validSessions.length &&
+            prevSessions.every((s, idx) => s.session_id === validSessions[idx]?.session_id)) {
+          return prevSessions;
+        }
+        return validSessions;
+      });
+    } catch (err) {
+      console.error('Failed to load sessions:', err);
+    }
+  }, []);
+
+  // Load current session - memoized to avoid unnecessary re-renders
+  // Preserve scroll position and avoid loading state when just updating messages
+  const loadSession = useCallback(async (id: string, skipLoadingState = false) => {
+    // Don't load if this session already failed (404)
+    if (failedSessionsRef.current.has(id)) {
+      console.log('Skipping load for failed session:', id);
       return;
     }
     
+    // Don't load if already loading this session
+    if (loadingSessionRef.current === id) {
+      console.log('Already loading session:', id);
+      return;
+    }
+    
+    // Clear any pending debounce timer
+    if (loadSessionTimeoutRef.current !== null) {
+      clearTimeout(loadSessionTimeoutRef.current);
+      loadSessionTimeoutRef.current = null;
+    }
+    
+    // Preserve scroll positions
+    const sidebarScrollTop = sidebarRef.current?.scrollTop ?? 0;
+    const messagesScrollTop = messagesContainerRef.current?.scrollTop ?? 0;
+    
+    // Mark as loading
+    loadingSessionRef.current = id;
+    
+    if (!skipLoadingState) {
+      setLoading(true);
+    }
+    setError(null);
+    
+    try {
+      const session = await getSession(id);
+      
+      // Session loaded successfully - remove from failed set if it was there
+      failedSessionsRef.current.delete(id);
+      
+      // Always update session - the comparison was too strict and prevented updates
+      // The streaming content will be cleared if it matches the final message
+      setCurrentSession(session);
+      // Update ref for use in closures
+      currentSessionRef.current = session;
+      
+      // Check if we should clear streaming content to avoid duplication
+      // If there's a new assistant message that matches the streaming content, clear it
+      if (streamingContent && session.messages.length > 0) {
+        const lastMessage = session.messages[session.messages.length - 1];
+        if (lastMessage.role === 'assistant') {
+          // Compare streaming content with final message (normalize whitespace)
+          const streamingNormalized = streamingContent.trim().replace(/\s+/g, ' ');
+          const messageNormalized = lastMessage.content.trim().replace(/\s+/g, ' ');
+          
+          // If they're similar (within 90% match), clear streaming content
+          // This handles cases where final message might have slight differences
+          if (messageNormalized.length > 0 && 
+              (streamingNormalized === messageNormalized || 
+               messageNormalized.includes(streamingNormalized.substring(0, Math.min(100, streamingNormalized.length))) ||
+               streamingNormalized.includes(messageNormalized.substring(0, Math.min(100, messageNormalized.length))))) {
+            // Clear streaming content since final message is now available
+            setStreamingContent('');
+          }
+        }
+      }
+      
+      // Restore scroll positions after state update
+      requestAnimationFrame(() => {
+        if (sidebarRef.current) {
+          sidebarRef.current.scrollTop = sidebarScrollTop;
+        }
+        if (messagesContainerRef.current && !shouldAutoScrollRef.current) {
+          messagesContainerRef.current.scrollTop = messagesScrollTop;
+        }
+      });
+      
+      // Don't auto-scroll when loading a session - preserve user's scroll position
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to load session';
+      
+      // Check if it's a 404 error
+      if (errorMessage.includes('404') || errorMessage.includes('Not Found')) {
+        console.warn('Session not found (404):', id);
+        // Mark session as failed to prevent future attempts
+        failedSessionsRef.current.add(id);
+        // Clear current session if it matches
+        setCurrentSession((prevSession) => {
+          if (prevSession && prevSession.session_id === id) {
+            currentSessionRef.current = null; // Update ref
+            return null;
+          }
+          return prevSession;
+        });
+        setError(`Session not found`);
+      } else {
+        setError(errorMessage);
+      }
+    } finally {
+      loadingSessionRef.current = null;
+      if (!skipLoadingState) {
+        setLoading(false);
+      }
+    }
+  }, [streamingContent]);
+  
+  // Handle WebSocket events - memoized to avoid unnecessary re-renders
+  const handleEvent = useCallback((event: Event) => {
+    // STRICT: Only process events for current session
+    // Ignore events without session_id or for different sessions
+    const eventSessionId = event.properties?.session_id;
+    if (!eventSessionId) {
+      // Events without session_id are system events (heartbeat, etc.) - ignore
+      return;
+    }
+    
+    // Don't process events if current session is null
+    if (!currentSession) {
+      return;
+    }
+    
+    // STRICT: Only process events for the exact current session
+    if (eventSessionId !== currentSession.session_id) {
+      // Silently ignore events from other sessions (including deleted ones)
+      // Log only if it's a deleted session to help debug
+      if (failedSessionsRef.current.has(eventSessionId)) {
+        console.debug('Ignoring event from deleted session:', eventSessionId, event.type);
+      }
+      return;
+    }
+    
+    // Don't process events for sessions that already failed (404)
+    if (failedSessionsRef.current.has(eventSessionId)) {
+      console.debug('Ignoring event for failed session:', eventSessionId, event.type);
+      return;
+    }
+    
+    // Only log events that we actually process
+    console.log('Processing event:', event.type, 'for session:', eventSessionId);
+    
+    // Debounced loadSession helper - with session validation
+    const debouncedLoadSession = (sessionId: string) => {
+      // Double-check session is still current before loading (use ref to avoid stale closure)
+      const currentSessionId = currentSessionRef.current?.session_id;
+      if (!currentSessionId || currentSessionId !== sessionId) {
+        console.log('Skipping loadSession - session changed:', sessionId, 'current:', currentSessionId);
+        return;
+      }
+      
+      // Clear any existing timeout
+      if (loadSessionTimeoutRef.current !== null) {
+        clearTimeout(loadSessionTimeoutRef.current);
+      }
+      
+      // Set new timeout (debounce 500ms to reduce flickering)
+      loadSessionTimeoutRef.current = window.setTimeout(() => {
+        loadSessionTimeoutRef.current = null;
+        // Check again before loading (session might have changed) - use ref
+        const currentSessionId = currentSessionRef.current?.session_id;
+        if (!currentSessionId || currentSessionId !== sessionId) {
+          console.log('Skipping loadSession - session changed during timeout:', sessionId, 'current:', currentSessionId);
+          return;
+        }
+        loadSession(sessionId, true).catch((err) => {
+          // Only log if not a 404 (expected for deleted sessions)
+          if (!(err instanceof Error && (err.message.includes('404') || err.message.includes('Not Found')))) {
+            console.error('Failed to load session:', err);
+          }
+        });
+      }, 500); // Increased debounce to 500ms to reduce flickering
+    };
+    
     switch (event.type) {
       case 'session.message.added':
-        // Reload session to get new message
-        // loadSession will automatically clear streaming content if it matches final message
-        if (currentSession) {
-          loadSession(currentSession.session_id).catch(console.error);
+        // Messages are streamed via llm.stream.token, so no need to reload
+        // Only reload if we're not streaming (e.g., user message was added)
+        if (!streamingContent) {
+          debouncedLoadSession(currentSession.session_id);
         }
         break;
       
       case 'session.updated':
-        // Reload session to get updates
-        // loadSession will automatically clear streaming content if it matches final message
-        if (currentSession) {
-          loadSession(currentSession.session_id).catch(console.error);
-        }
+        // No need to reload - messages are already streamed via llm.stream.token
+        // The llm.stream.end event will reload the session to get the final saved message
         break;
       
       case 'execution.step.completed':
-        // Step completed - reload session to show progress
-        if (currentSession) {
-          loadSession(currentSession.session_id).catch(console.error);
-        }
+        // No need to reload - execution steps are shown via intermediate chunks
+        // Messages are streamed in real-time via llm.stream.token
         break;
       
       case 'execution.completed':
-        // Execution completed - reload session to show final result
-        if (currentSession) {
-          loadSession(currentSession.session_id).catch(console.error);
-        }
+        // No need to reload - messages are already streamed via llm.stream.token
+        // The llm.stream.end event will reload the session to get the final saved message
         break;
       
       case 'execution.failed':
-        // Execution failed - reload session to show error
-        if (currentSession) {
-          loadSession(currentSession.session_id).catch(console.error);
+        // Execution failed - reload session to show error (only if not streaming)
+        if (!streamingContent) {
+          debouncedLoadSession(currentSession.session_id);
         }
         break;
       
@@ -384,12 +564,12 @@ export function ChatPage() {
         if (newToken) {
           setStreamingContent((prev) => {
             const updated = prev + newToken;
-            // Auto-scroll to bottom during streaming
-            setTimeout(() => {
+            // Auto-scroll to bottom during streaming - use requestAnimationFrame to avoid flickering
+            requestAnimationFrame(() => {
               if (shouldAutoScrollRef.current && messagesEndRef.current) {
                 messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
               }
-            }, 0);
+            });
             return updated;
           });
         }
@@ -406,8 +586,20 @@ export function ChatPage() {
             { type: 'reasoning', content: event.properties.reasoning, timestamp: Date.now() }
           ]);
         }
-        // Don't clear streaming content immediately - wait for session.updated
-        // The session.updated handler will clear it when final message arrives
+        // Wait a bit for backend to save final message, then reload session
+        // This ensures we get the final message without flickering
+        // Use eventSessionId directly and ref to avoid stale closure
+        setTimeout(() => {
+          if (eventSessionId) {
+            // Check if session still matches (may have changed during timeout) - use ref
+            const currentSessionId = currentSessionRef.current?.session_id;
+            if (currentSessionId === eventSessionId) {
+              debouncedLoadSession(eventSessionId);
+            } else {
+              console.log('Skipping loadSession after stream.end - session changed:', eventSessionId, 'current:', currentSessionId);
+            }
+          }
+        }, 200); // Small delay to let backend save the message
         break;
       
       case 'tool.decision':
@@ -460,77 +652,19 @@ export function ChatPage() {
       case 'tool.result':
         // Tool result received - show progress
         console.log(`Tool result: ${event.properties.tool}.${event.properties.operation} - ${event.properties.success ? 'success' : 'failed'}`);
-        // Reload session to show updated results
-        if (currentSession) {
-          loadSession(currentSession.session_id).catch(console.error);
-        }
+        // Don't reload during streaming - tool results are intermediate steps
+        // The final result will come via execution.completed or session.updated
         break;
       
       default:
         // Ignore other events
         break;
     }
-  };
+  }, [currentSession, streamingContent, loadSession]);
   
   // Connect to WebSocket event stream (only when session is active)
-  useEventStream(handleEvent, !!currentSession);
-
-  // Load sessions list
-  const loadSessions = async () => {
-    try {
-      const response = await listSessions(50, 0);
-      setSessions(response.sessions);
-    } catch (err) {
-      console.error('Failed to load sessions:', err);
-    }
-  };
-
-  // Load current session
-  const loadSession = async (id: string) => {
-    // Preserve sidebar scroll position
-    const sidebarScrollTop = sidebarRef.current?.scrollTop ?? 0;
-    
-    setLoading(true);
-    setError(null);
-    try {
-      const session = await getSession(id);
-      setCurrentSession(session);
-      
-      // Check if we should clear streaming content to avoid duplication
-      // If there's a new assistant message that matches the streaming content, clear it
-      if (streamingContent && session.messages.length > 0) {
-        const lastMessage = session.messages[session.messages.length - 1];
-        if (lastMessage.role === 'assistant') {
-          // Compare streaming content with final message (normalize whitespace)
-          const streamingNormalized = streamingContent.trim().replace(/\s+/g, ' ');
-          const messageNormalized = lastMessage.content.trim().replace(/\s+/g, ' ');
-          
-          // If they're similar (within 90% match), clear streaming content
-          // This handles cases where final message might have slight differences
-          if (messageNormalized.length > 0 && 
-              (streamingNormalized === messageNormalized || 
-               messageNormalized.includes(streamingNormalized.substring(0, Math.min(100, streamingNormalized.length))) ||
-               streamingNormalized.includes(messageNormalized.substring(0, Math.min(100, messageNormalized.length))))) {
-            // Clear streaming content since final message is now available
-            setStreamingContent('');
-          }
-        }
-      }
-      
-      // Restore sidebar scroll position after state update
-      setTimeout(() => {
-        if (sidebarRef.current) {
-          sidebarRef.current.scrollTop = sidebarScrollTop;
-        }
-      }, 0);
-      
-      // Don't auto-scroll when loading a session - preserve user's scroll position
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load session');
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Pass session_id to filter events - only receive events for current session
+  useEventStream(handleEvent, !!currentSession, currentSession?.session_id);
 
   // Create new session
   const handleNewSession = async () => {
@@ -571,10 +705,12 @@ export function ChatPage() {
     shouldAutoScrollRef.current = true;
     
     // Scroll to bottom immediately after adding user message
-    setCurrentSession({
+    const updatedSession = {
       ...currentSession,
       messages: [...currentSession.messages, userMessage],
-    });
+    };
+    setCurrentSession(updatedSession);
+    currentSessionRef.current = updatedSession; // Update ref
     
     // Scroll to bottom to show user message immediately
     requestAnimationFrame(() => {
@@ -597,33 +733,42 @@ export function ChatPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send message');
       // Remove optimistic message on error
-      setCurrentSession({
+      const revertedSession = {
         ...currentSession,
         messages: currentSession.messages.slice(0, -1),
-      });
+      };
+      setCurrentSession(revertedSession);
+      currentSessionRef.current = revertedSession; // Update ref
     } finally {
       setSending(false);
     }
   };
 
+  // Memoize messages length to avoid unnecessary re-renders and scrollbar flickering
+  const messagesLength = useMemo(() => currentSession?.messages.length ?? 0, [currentSession?.messages.length]);
+  
   // Scroll to bottom smoothly when messages change - ONLY if auto-scroll is enabled
   // This happens when user sends a message, but NOT when agent responds
+  // Use messagesLength instead of messages array to avoid flickering
   useEffect(() => {
     if (!messagesContainerRef.current) return;
     
     // Only scroll if auto-scroll is explicitly enabled (user just sent a message)
     if (shouldAutoScrollRef.current) {
-      requestAnimationFrame(() => {
-        if (messagesContainerRef.current) {
+      // Use requestAnimationFrame to avoid layout thrashing
+      const rafId = requestAnimationFrame(() => {
+        if (messagesContainerRef.current && shouldAutoScrollRef.current) {
           messagesContainerRef.current.scrollTo({
             top: messagesContainerRef.current.scrollHeight,
             behavior: 'smooth'
           });
         }
       });
+      
+      return () => cancelAnimationFrame(rafId);
     }
     // When agent responds, auto-scroll is disabled, so scroll position stays where user left it
-  }, [currentSession?.messages]);
+  }, [messagesLength]);
 
   // Track scroll position to determine if we should auto-scroll
   const handleMessagesScroll = () => {
@@ -642,14 +787,37 @@ export function ChatPage() {
     loadSessions();
   }, []);
 
-  // Load session when sessionId changes
+  // Load session when sessionId changes - memoized dependency
   useEffect(() => {
+    // Don't try to load sessions that already failed (404)
+    if (sessionId && failedSessionsRef.current.has(sessionId)) {
+      console.log('Skipping load for failed session in useEffect:', sessionId);
+      setCurrentSession(null);
+      currentSessionRef.current = null; // Update ref
+      return;
+    }
+    
+    // Clear failed sessions when navigating to a new session (only if it's different)
+    if (sessionId && currentSessionRef.current?.session_id !== sessionId) {
+      failedSessionsRef.current.clear();
+    }
+    
     if (sessionId) {
-      loadSession(sessionId);
+      loadSession(sessionId, false); // Use loading state for initial load
     } else {
       setCurrentSession(null);
+      currentSessionRef.current = null; // Update ref
     }
-  }, [sessionId]);
+    
+    // Cleanup: clear timeout on unmount or session change
+    return () => {
+      if (loadSessionTimeoutRef.current !== null) {
+        clearTimeout(loadSessionTimeoutRef.current);
+        loadSessionTimeoutRef.current = null;
+      }
+      loadingSessionRef.current = null;
+    };
+  }, [sessionId, loadSession]);
 
   // Handle Enter key
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -683,6 +851,7 @@ export function ChatPage() {
       if (currentSession && currentSession.session_id === sessionIdToDelete) {
         window.history.pushState({}, '', '/chat');
         setCurrentSession(null);
+        currentSessionRef.current = null; // Update ref
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete session');
@@ -749,6 +918,11 @@ export function ChatPage() {
             <div
               key={session.session_id}
               onClick={() => {
+                // Don't navigate to sessions that already failed (404)
+                if (failedSessionsRef.current.has(session.session_id)) {
+                  console.log('Skipping navigation to failed session:', session.session_id);
+                  return;
+                }
                 window.history.pushState({}, '', `/chat/${session.session_id}`);
                 loadSession(session.session_id);
               }}

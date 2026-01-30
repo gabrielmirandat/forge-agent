@@ -130,6 +130,26 @@ async def _register_mcp_tools(registry: ToolRegistry, config: AgentConfig):
     from agent.observability import get_logger
 
     logger = get_logger("mcp", "dependencies")
+    
+    # Register RAG tool if enabled (default: enabled)
+    # Check if tools config exists, otherwise default to enabled
+    tools_config = getattr(config, "tools", None)
+    rag_enabled = True
+    rag_config = {}
+    
+    if tools_config:
+        rag_config = tools_config.get("rag", {})
+        rag_enabled = rag_config.get("enabled", True)
+    
+    if rag_enabled:
+        from agent.tools.rag_tool import RAGTool
+        # Set default docs_path if not specified
+        if "docs_path" not in rag_config:
+            from pathlib import Path
+            rag_config["docs_path"] = str(Path("_docs").resolve())
+        rag_tool = RAGTool(rag_config)
+        registry.register(rag_tool)
+        logger.info("Registered RAG documentation search tool")
     mcp_manager = get_mcp_manager()
     mcp_configs = config.mcp or {}
 

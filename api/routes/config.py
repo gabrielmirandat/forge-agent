@@ -60,6 +60,8 @@ async def list_llm_providers() -> Dict[str, Any]:
     # ✅ = Works correctly, ❌ = Does not work (model limitation)
     tested_models = {
         "qwen3:8b": {"status": "✅", "description": "Qwen model with good tool-calling support"},
+        "mistral-small": {"status": "✅", "description": "Mistral model with tool-calling support"},
+        "mistral-small3.2": {"status": "✅", "description": "Mistral model with improved function calling"},
         # "mistral": {"status": "❌", "description": "Does not call tools (model limitation)"},  # Removed - not working
     }
     

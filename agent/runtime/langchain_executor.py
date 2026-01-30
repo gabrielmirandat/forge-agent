@@ -32,6 +32,8 @@ from agent.config.loader import AgentConfig
 from agent.observability import get_logger, log_event
 from agent.runtime.bus import EventType, publish
 from agent.runtime.callbacks import ErrorHandlingCallbackHandler, ReasoningAndDebugCallbackHandler
+from agent.runtime.event_helpers import publish_if_session_exists
+from agent.storage import Storage
 from agent.tools.base import ToolRegistry
 
 
@@ -350,7 +352,7 @@ class JSONToolCallParser(ToolsAgentOutputParser):
         self.logger.debug(
             f"🔍 JSONToolCallParser.parse_result called",
             extra={
-                "session_id": self.session_id,
+                "session_id": self._session_id,
                 "has_tool_calls": bool(hasattr(message, "tool_calls") and message.tool_calls),
                 "has_additional_kwargs": bool(hasattr(message, "additional_kwargs") and message.additional_kwargs),
                 "content_preview": str(message.content)[:200] if hasattr(message, "content") else None,
@@ -363,7 +365,7 @@ class JSONToolCallParser(ToolsAgentOutputParser):
             
             self.logger.debug(
                 f"🔍 Standard parsing result: {type(parsed).__name__}",
-                extra={"session_id": self.session_id}
+                extra={"session_id": self._session_id}
             )
             
             # If we got AgentFinish but content might have tool calls, check it
@@ -381,7 +383,7 @@ class JSONToolCallParser(ToolsAgentOutputParser):
                         self.logger.info(
                             f"🔧 Found JSON tool call in content: {tool_name}",
                             extra={
-                                "session_id": self.session_id,
+                                "session_id": self._session_id,
                                 "tool": tool_name,
                                 "tool_args": tool_args,  # Changed from "args" to avoid conflict with logging
                             }
@@ -426,7 +428,7 @@ class JSONToolCallParser(ToolsAgentOutputParser):
                         self.logger.info(
                             f"✅ Injected tool call and re-parsing: {tool_name}",
                             extra={
-                                "session_id": self.session_id,
+                                "session_id": self._session_id,
                                 "tool": tool_name,
                             }
                         )
@@ -435,7 +437,7 @@ class JSONToolCallParser(ToolsAgentOutputParser):
                         re_parsed = parse_ai_message_to_tool_action(new_message)
                         self.logger.debug(
                             f"🔍 Re-parsing result: {type(re_parsed).__name__}",
-                            extra={"session_id": self.session_id}
+                            extra={"session_id": self._session_id}
                         )
                         return re_parsed
             
@@ -443,7 +445,7 @@ class JSONToolCallParser(ToolsAgentOutputParser):
         except Exception as e:
             self.logger.warning(
                 f"Error in JSON tool call parser: {e}",
-                extra={"session_id": self.session_id},
+                extra={"session_id": self._session_id},
                 exc_info=True
             )
             # Fall back to standard parsing
@@ -473,28 +475,34 @@ class LangChainExecutor:
         self,
         config: AgentConfig,
         tool_registry: ToolRegistry,
-        session_id: Optional[str] = None,
+        session_id: Optional[str] = None,  # Deprecated: use run(session_id=...) instead
         max_iterations: int = 50,
         buffer_window_size: int = 10,
+        storage: Optional[Storage] = None,
     ) -> None:
-        """Initialize Tool-Calling agent executor.
+        """Initialize Tool-Calling agent executor (shared instance).
         
         All LLM providers and tools are loaded/executed through LangChain.
         The executor uses create_agent to build a stateful agent graph that
         manages tool calling loops automatically.
         
+        This executor is designed to be shared across multiple sessions.
+        Pass session_id to run() method instead of __init__.
+        
         Args:
             config: Agent configuration containing LLM settings and runtime options.
             tool_registry: Tool registry containing all available tools.
-            session_id: Optional session ID for tracking and state management.
+            session_id: Deprecated - pass session_id to run() instead. Kept for backward compatibility.
             max_iterations: Maximum number of agent iterations before stopping.
             buffer_window_size: Number of recent messages to keep in context buffer.
+            storage: Optional Storage instance to check session existence before publishing events.
         """
         self.config = config
         self.tool_registry = tool_registry
-        self.session_id = session_id
+        self._default_session_id = session_id  # Kept for backward compatibility
         self.max_iterations = max_iterations
         self.buffer_window_size = buffer_window_size
+        self.storage = storage
         self.logger = get_logger("langchain_executor", "executor")
         
         # Configure LangSmith tracing if enabled
@@ -540,22 +548,28 @@ class LangChainExecutor:
         # Create ChatOllama instance with optimal settings for tool calling
         # IMPORTANT: temperature=0.0 is recommended for deterministic JSON output in tool calls
         # Lower temperature = more predictable tool call formatting
+        # num_gpu: Use GPU if available (set to -1 to use all available GPUs, or specific number)
+        # Ollama will automatically detect and use GPU if available
+        num_gpu = getattr(config.llm, 'num_gpu', -1)  # Default to -1 (use all GPUs) if not specified
+        
         self.langchain_llm = ChatOllama(
             model=config.llm.model,
             base_url=config.llm.base_url or "http://localhost:11434",
             temperature=config.llm.temperature,  # Should be 0.0 for best tool calling results
             num_predict=config.llm.max_tokens,  # Ollama uses num_predict instead of max_tokens
+            num_gpu=num_gpu,  # Use GPU if available (-1 = use all GPUs, 0 = CPU only)
             timeout=config.llm.timeout,
             # Note: Ollama tool calling format is handled automatically by LangChain's bind_tools()
             # The format expected by Ollama API is: {"type": "function", "function": {"name": "...", "arguments": {...}}}
             # LangChain converts this automatically when using bind_tools()
-            # IMPORTANT: Use langchain_ollama (not langchain_community) for best tool calling support
+            # IMPORTANT: Use langchain_ollama (not langchain-community) for best tool calling support
         )
         
         # Log connection info for debugging
         self.logger.info(
             f"ChatOllama initialized: model={config.llm.model}, "
-            f"base_url={config.llm.base_url or 'http://localhost:11434'}"
+            f"base_url={config.llm.base_url or 'http://localhost:11434'}, "
+            f"num_gpu={num_gpu}"
         )
         
         # Tools and agent executor are loaded lazily in the async context (run/_ensure_agent_initialized)
@@ -570,29 +584,40 @@ class LangChainExecutor:
         # Memory management: manual message history
         # LangChain 1.2.6 does not provide ConversationBufferWindowMemory/ConversationSummaryMemory
         # in the same way, so we manage message history manually.
-        self.message_history: List[Dict[str, Any]] = []
+        # Note: message_history is per-session, managed in run() method
         self.buffer_window_size = buffer_window_size
         
-        # Create error handling callback
-        # Pass model name to callback for metrics tracking
-        model_name = config.llm.model if config.llm else None
-        self.callback_handler = ErrorHandlingCallbackHandler(
-            session_id=session_id,
-            model_name=model_name
-        )
+        # Callbacks are created dynamically per execution in run() method
+        # This allows the executor to be shared across multiple sessions
+        # Get LangSmith callbacks if tracing is enabled (these are stateless)
+        # Initialize as None, will be loaded lazily on first use
+        self.langsmith_callbacks: Optional[List[Any]] = None
+    
+    async def _safe_publish(
+        self, 
+        event_type: EventType, 
+        properties: Dict[str, Any],
+        session_id: Optional[str] = None
+    ) -> bool:
+        """Publish event only if session still exists.
         
-        # Get LangSmith callbacks if tracing is enabled
-        langsmith_callbacks = self._get_langsmith_callbacks()
+        This prevents publishing events for deleted sessions, avoiding
+        unnecessary frontend requests and 404 errors.
         
-        # Initialize reasoning and debug callback for capturing reasoning, steps, and debug info
-        self.reasoning_callback = ReasoningAndDebugCallbackHandler(session_id=session_id)
-        
-        # Combine callbacks: error handling + reasoning/debug + LangSmith tracing
-        self.all_callbacks = [self.callback_handler, self.reasoning_callback]
-        if langsmith_callbacks:
-            self.all_callbacks.extend(langsmith_callbacks)
+        Args:
+            event_type: Type of event to publish
+            properties: Event properties (must include session_id)
+            session_id: Optional session ID (if not in properties)
+            
+        Returns:
+            True if event was published, False if session doesn't exist
+        """
+        # Ensure session_id is in properties
+        if "session_id" not in properties and session_id:
+            properties["session_id"] = session_id
+        return await publish_if_session_exists(event_type, properties, self.storage)
 
-    async def _ensure_agent_initialized(self) -> None:
+    async def _ensure_agent_initialized(self, session_id: Optional[str] = None) -> None:
         """Initialize the agent graph and bind tools to the model.
         
         This method is called lazily on first use to avoid event loop issues.
@@ -601,6 +626,9 @@ class LangChainExecutor:
         2. Binds tools to the LLM using bind_tools()
         3. Builds the system prompt
         4. Creates the agent graph using create_agent()
+        
+        Args:
+            session_id: Optional session ID for logging purposes.
         
         Raises:
             ImportError: If required LangChain modules are not available.
@@ -613,10 +641,14 @@ class LangChainExecutor:
         """
         if self.agent_executor is not None:
             return
+        
+        # Use provided session_id or fall back to default
+        current_session_id = session_id or self._default_session_id
 
         # Load LangChain tools from MCP servers using langchain-mcp-adapters (official pattern)
+        # Note: session_id is optional for tool loading (tools are shared across sessions)
         self.langchain_tools = await self.tool_registry.get_langchain_tools(
-            session_id=self.session_id,
+            session_id=self._default_session_id,  # Use default for tool loading (backward compatibility)
             config=self.config,
         )
 
@@ -655,13 +687,13 @@ class LangChainExecutor:
                     )
                     self.logger.info(
                         f"✅ Tools bound with tool_choice='{tool_choice}' - {len(self.langchain_tools)} tools",
-                        extra={"session_id": self.session_id, "tool_choice": tool_choice},
+                        extra={"session_id": current_session_id, "tool_choice": tool_choice},
                     )
                 except TypeError:
                     # Model doesn't support tool_choice parameter, fall back to default
                     self.logger.debug(
                         f"Model doesn't support tool_choice parameter, using default bind_tools()",
-                        extra={"session_id": self.session_id},
+                        extra={"session_id": current_session_id},
                     )
                     self.langchain_llm_with_tools = self.langchain_llm.bind_tools(self.langchain_tools)
             else:
@@ -677,7 +709,7 @@ class LangChainExecutor:
             self.logger.info(
                 f"✅ Tools bound to model using bind_tools() - {len(self.langchain_tools)} tools",
                 extra={
-                    "session_id": self.session_id,
+                    "session_id": current_session_id,
                     "tools_count": len(self.langchain_tools),
                     "tool_names_sample": tool_names,
                     "tool_choice": tool_choice,
@@ -689,7 +721,7 @@ class LangChainExecutor:
                 bound_tools_count = len(self.langchain_llm_with_tools.bound_tools) if self.langchain_llm_with_tools.bound_tools else 0
                 self.logger.info(
                     f"✅ Verified: Model has {bound_tools_count} bound tools",
-                    extra={"session_id": self.session_id},
+                    extra={"session_id": current_session_id},
                 )
         except Exception as e:
             # Log error but continue without tool binding
@@ -698,7 +730,7 @@ class LangChainExecutor:
             msg = f"bind_tools() failed: {str(e)}"
             self.logger.warning(
                 f"⚠️ {msg}, using model without bind_tools",
-                extra={"session_id": self.session_id},
+                extra={"session_id": current_session_id},
                 exc_info=True,
             )
             self.langchain_llm_with_tools = self.langchain_llm
@@ -709,7 +741,7 @@ class LangChainExecutor:
         self.logger.info(
             "System prompt built",
             extra={
-                "session_id": self.session_id,
+                "session_id": current_session_id,
                 "prompt_length": len(system_prompt_str),
                 "tools_count": len(self.langchain_tools),
             }
@@ -752,7 +784,7 @@ class LangChainExecutor:
             # Create custom agent with JSON parser
             # Note: The wrapper is applied to langchain_llm_with_tools, but the parser
             # needs to be in the chain to intercept the final output
-            custom_parser = JSONToolCallParser(self.logger, self.session_id)
+            custom_parser = JSONToolCallParser(self.logger, current_session_id)
             
             # Create the chain manually with our custom parser
             # Standard chain: RunnablePassthrough | prompt | llm | parser
@@ -768,14 +800,14 @@ class LangChainExecutor:
             
             self.logger.info(
                 "✅ Agent created with create_tool_calling_agent",
-                extra={"session_id": self.session_id}
+                extra={"session_id": current_session_id}
             )
         except Exception as e:
             # Log error and re-raise - this is a critical failure
             msg = f"Failed to create tool calling agent: {str(e)}"
             self.logger.error(
                 f"❌ {msg}",
-                extra={"session_id": self.session_id},
+                extra={"session_id": current_session_id},
                 exc_info=True,
             )
             raise ValueError(msg) from e
@@ -787,7 +819,7 @@ class LangChainExecutor:
             self.agent_executor = AgentExecutor(
                 agent=self.agent,
                 tools=self.langchain_tools,
-                verbose=True,  # Enable verbose logging for debugging
+                verbose=False,  # Disable verbose logging to reduce "Entering new None chain" messages
                 max_iterations=self.max_iterations,  # Limit iterations to prevent infinite loops
                 max_execution_time=300.0,  # Maximum 5 minutes execution time
                 early_stopping_method="force",  # Force stop if max iterations reached
@@ -798,7 +830,7 @@ class LangChainExecutor:
             self.logger.info(
                 f"✅ AgentExecutor created with {len(self.langchain_tools)} tools",
                 extra={
-                    "session_id": self.session_id,
+                    "session_id": current_session_id,
                     "tools_count": len(self.langchain_tools),
                     "model_type": type(self.langchain_llm_with_tools).__name__,
                     "max_iterations": self.max_iterations,
@@ -809,7 +841,7 @@ class LangChainExecutor:
             msg = f"Failed to create AgentExecutor: {str(e)}"
             self.logger.error(
                 f"❌ {msg}",
-                extra={"session_id": self.session_id},
+                extra={"session_id": current_session_id},
                 exc_info=True,
             )
             raise ValueError(msg) from e
@@ -842,8 +874,8 @@ class LangChainExecutor:
             if os.getenv("LANGSMITH_PROJECT"):
                 os.environ["LANGCHAIN_PROJECT"] = os.getenv("LANGSMITH_PROJECT")
             else:
-                # Use session_id or default project name
-                project_name = f"forge-agent-{self.session_id[:8]}" if self.session_id else "forge-agent"
+                # Use default project name (session_id not available in __init__)
+                project_name = "forge-agent"
                 os.environ["LANGCHAIN_PROJECT"] = project_name
             
             # Optional: Set workspace ID
@@ -860,8 +892,11 @@ class LangChainExecutor:
             # Explicitly disable if not enabled
             os.environ["LANGCHAIN_TRACING_V2"] = "false"
     
-    def _get_langsmith_callbacks(self) -> List[Any]:
+    def _get_langsmith_callbacks(self, session_id: Optional[str] = None) -> List[Any]:
         """Get LangSmith callbacks if tracing is enabled.
+        
+        Args:
+            session_id: Optional session ID for trace organization.
         
         Returns:
             List of LangSmith callback handlers, or empty list if disabled
@@ -893,9 +928,9 @@ class LangChainExecutor:
             tracer = LangChainTracer()
             
             # Add metadata for better trace organization
-            if self.session_id:
+            if session_id:
                 # Set run name for better trace identification
-                tracer.run_name = f"agent-execution-{self.session_id[:8]}"
+                tracer.run_name = f"agent-execution-{session_id[:8]}"
             
             return [tracer]
         except ImportError as e:
@@ -1185,55 +1220,6 @@ Available tools:
             "chat_history": recent_messages,
         }
     
-    def _chunk_to_content_blocks(self, chunk: Any) -> List[Dict[str, Any]]:
-        """Convert a streaming chunk to content_blocks format.
-        
-        This follows the content_blocks pattern from model_stream.py:
-        - "reasoning" blocks for model reasoning/thinking
-        - "tool_call_chunk" blocks for tool calls
-        - "text" blocks for regular text content
-        
-        Args:
-            chunk: Streaming chunk from LLM (AIMessageChunk or similar)
-            
-        Returns:
-            List of content blocks with type and content
-        """
-        content_blocks = []
-        
-        # Check if chunk has content (text)
-        if hasattr(chunk, "content") and chunk.content:
-            content_blocks.append({
-                "type": "text",
-                "text": chunk.content
-            })
-        
-        # Check if chunk has tool_calls
-        if hasattr(chunk, "tool_calls") and chunk.tool_calls:
-            for tool_call in chunk.tool_calls:
-                content_blocks.append({
-                    "type": "tool_call_chunk",
-                    "tool_call": tool_call
-                })
-        
-        # Check for reasoning in response_metadata (if available)
-        if hasattr(chunk, "response_metadata"):
-            metadata = chunk.response_metadata
-            if metadata and isinstance(metadata, dict):
-                # Check for reasoning_content (Claude-style)
-                if "reasoning_content" in metadata:
-                    content_blocks.append({
-                        "type": "reasoning",
-                        "reasoning": metadata["reasoning_content"]
-                    })
-                # Check for reasoning (generic)
-                elif "reasoning" in metadata:
-                    content_blocks.append({
-                        "type": "reasoning",
-                        "reasoning": metadata["reasoning"]
-                    })
-        
-        return content_blocks
     
     def _save_context(self, user_input: str, agent_output: str):
         """Save conversation context to message history.
@@ -1260,6 +1246,8 @@ Available tools:
         self,
         user_message: str,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
+        session_id: Optional[str] = None,
+        storage: Optional[Storage] = None,
     ) -> Dict[str, Any]:
         """Run Tool-Calling agent execution.
         
@@ -1282,37 +1270,60 @@ Available tools:
         Args:
             user_message: User's message/request
             conversation_history: Optional conversation history (for initializing memory)
+            session_id: Session ID for this execution (required for event publishing)
+            storage: Optional Storage instance (overrides instance storage if provided)
             
         Returns:
             Dictionary with final response and execution history
         """
+        # Use provided session_id or fall back to default (backward compatibility)
+        current_session_id = session_id or self._default_session_id
+        current_storage = storage or self.storage
+        
+        # Create callbacks dynamically for this session
+        model_name = self.config.llm.model if self.config.llm else None
+        callback_handler = ErrorHandlingCallbackHandler(
+            session_id=current_session_id,
+            model_name=model_name
+        )
+        reasoning_callback = ReasoningAndDebugCallbackHandler(session_id=current_session_id)
+        
+        # Combine callbacks: error handling + reasoning/debug + LangSmith tracing
+        all_callbacks = [callback_handler, reasoning_callback]
+        # Load LangSmith callbacks lazily if not already loaded
+        if not hasattr(self, 'langsmith_callbacks') or self.langsmith_callbacks is None:
+            self.langsmith_callbacks = self._get_langsmith_callbacks(session_id=current_session_id)
+        if self.langsmith_callbacks:
+            all_callbacks.extend(self.langsmith_callbacks)
+        
+        # Per-session message history (reset for each execution)
+        message_history: List[Dict[str, Any]] = []
+        
         start_time = time.time()
         log_event(
             self.logger,
             "tool_calling_executor.started",
-            session_id=self.session_id,
+            session_id=current_session_id,
             max_iterations=self.max_iterations,
         )
 
         # Ensure tools and agent graph are initialized in this async context
-        await self._ensure_agent_initialized()
+        await self._ensure_agent_initialized(session_id=current_session_id)
         try:
             # Initialize memory from conversation history if provided
-            # Only initialize if message history is empty (avoid duplicates)
-            if conversation_history and len(self.message_history) == 0:
+            if conversation_history:
                 # Process messages and add to history
                 for msg in conversation_history:
                     role = msg.get("role", "")
                     content = msg.get("content", "")
                     if role in ["user", "assistant"]:
-                        self.message_history.append({
+                        message_history.append({
                             "role": role,
                             "content": content,
                         })
             
-            # Load memory variables (recent messages)
-            memory_vars = self._load_memory_variables()
-            chat_history = memory_vars.get("chat_history", [])
+            # Load memory variables (recent messages) from per-session history
+            chat_history = message_history[-self.buffer_window_size:] if message_history else []
             
             # Convert chat history to LangChain messages for AgentExecutor
             # AgentExecutor expects chat_history as a list of BaseMessage objects
@@ -1339,18 +1350,18 @@ Available tools:
             log_event(
                 self.logger,
                 "tool_calling_executor.agent.invoking",
-                session_id=self.session_id,
+                session_id=current_session_id,
                 buffer_messages=len(chat_history),
             )
             
             # Log available tools for debugging
             self.logger.info(
                 f"Available tools for agent: {[t.name for t in self.langchain_tools[:10]]}",
-                extra={"session_id": self.session_id, "total_tools": len(self.langchain_tools)}
+                extra={"session_id": current_session_id, "total_tools": len(self.langchain_tools)}
             )
             self.logger.info(
                 f"User message: {user_message[:200]}",
-                extra={"session_id": self.session_id}
+                extra={"session_id": current_session_id}
             )
             
             # Log system prompt being used
@@ -1368,7 +1379,7 @@ Available tools:
                 system_prompt_debug = system_prompt_for_log[:500] if system_prompt_for_log else "No system prompt"
                 self.logger.info(
                     f"System prompt (first 500 chars): {system_prompt_debug}",
-                    extra={"session_id": self.session_id, "prompt_length": len(system_prompt_for_log)}
+                    extra={"session_id": current_session_id, "prompt_length": len(system_prompt_for_log)}
                 )
             
             # Use AgentExecutor to run the agent with real-time streaming
@@ -1382,7 +1393,13 @@ Available tools:
             last_chain_output = None
             
             # Prepare config for agent invocation (callbacks for observability)
-            agent_config: Dict[str, Any] = {"callbacks": self.all_callbacks}
+            # Add run_name to identify the chain in LangChain traces (prevents "None chain" message)
+            chain_name = f"forge-agent-{current_session_id[:8]}" if current_session_id else "forge-agent"
+            agent_config: Dict[str, Any] = {
+                "callbacks": all_callbacks,
+                "run_name": chain_name,  # Set chain name to avoid "None chain" in logs
+                "tags": ["forge-agent", "tool-calling-agent"],
+            }
             
             try:
                 # Use astream_events for real-time streaming (similar to LangChain docs)
@@ -1398,56 +1415,100 @@ Available tools:
                     event_name_full = event.get("name", "")
                     
                     # Stream LLM tokens in real-time with content_blocks pattern
-                    # This follows the content_blocks pattern from model_stream.py POC
-                    # Each chunk is converted to content_blocks with types: "reasoning", "tool_call_chunk", "text"
+                    # Uses LangChain's native content_blocks (LangChain 1.0+)
+                    # Each chunk has content_blocks with types: "reasoning", "tool_call_chunk", "text"
+                    # Reference: https://docs.langchain.com/docs/use_cases/streaming
                     if event_name == "on_chat_model_stream":
                         chunk = event_data.get("chunk")
                         if chunk:
-                            # Convert chunk to content_blocks format
-                            content_blocks = self._chunk_to_content_blocks(chunk)
-                            
-                            # Process each content block and publish events
-                            # Accumulate text tokens first
-                            text_tokens = []
-                            for block in content_blocks:
-                                if block["type"] == "reasoning" and (reasoning := block.get("reasoning")):
-                                    # Publish reasoning block
-                                    await publish(EventType.LLM_REASONING, {
-                                        "session_id": self.session_id,
-                                        "content": reasoning,
-                                    })
-                                elif block["type"] == "tool_call_chunk":
-                                    # Publish tool call chunk
-                                    tool_call = block.get("tool_call", {})
-                                    await publish(EventType.TOOL_CALLED, {
-                                        "session_id": self.session_id,
-                                        "tool": tool_call.get("name", ""),
-                                        "arguments": tool_call.get("args", {}),
-                                    })
-                                elif block["type"] == "text":
-                                    # Collect text tokens (don't publish individually to avoid duplication)
-                                    token = block.get("text", "")
-                                    if token:
-                                        text_tokens.append(token)
-                                        accumulated_content += token
-                            
-                            # Publish content_blocks event for structured streaming (includes all blocks)
-                            # This is the single source of truth - frontend processes this
-                            if content_blocks:
-                                await publish(EventType.LLM_STREAM_TOKEN, {
-                                    "session_id": self.session_id,
-                                    "content_blocks": content_blocks,  # Structured blocks pattern
-                                    "accumulated": accumulated_content,
-                                    # Also include token for backward compatibility (only text tokens)
-                                    "token": "".join(text_tokens) if text_tokens else None,
-                                })
+                            content_blocks = []
+                            try:
+                                # Try to use native content_blocks if available
+                                if hasattr(chunk, "content_blocks") and chunk.content_blocks is not None:
+                                    native_blocks = chunk.content_blocks
+                                    
+                                    # Convert to dict format for JSON serialization
+                                    for block in native_blocks:
+                                        if isinstance(block, dict):
+                                            content_blocks.append(block)
+                                        else:
+                                            # Convert ContentBlock object to dict
+                                            block_type = getattr(block, "type", "text")
+                                            block_dict = {"type": block_type}
+                                            if hasattr(block, "text"):
+                                                block_dict["text"] = block.text
+                                            if hasattr(block, "reasoning"):
+                                                block_dict["reasoning"] = block.reasoning
+                                            if hasattr(block, "tool_call"):
+                                                block_dict["tool_call"] = block.tool_call
+                                            if hasattr(block, "tool_call_chunk"):
+                                                block_dict["tool_call_chunk"] = block.tool_call_chunk
+                                            content_blocks.append(block_dict)
+                                else:
+                                    # Fallback: Extract text content directly from chunk
+                                    if hasattr(chunk, "content") and chunk.content:
+                                        text_content = str(chunk.content) if chunk.content else ""
+                                        if text_content:
+                                            content_blocks.append({
+                                                "type": "text",
+                                                "text": text_content
+                                            })
+                                
+                                self.logger.debug(
+                                    f"Streaming chunk: {len(content_blocks)} blocks, "
+                                    f"types={[b.get('type') for b in content_blocks]}"
+                                )
+                                
+                                # Process each content block and publish events
+                                # Accumulate text tokens first
+                                text_tokens = []
+                                for block in content_blocks:
+                                    if block["type"] == "reasoning" and (reasoning := block.get("reasoning")):
+                                        # Publish reasoning block (only if session exists)
+                                        await self._safe_publish(EventType.LLM_REASONING, {
+                                            "session_id": current_session_id,
+                                            "content": reasoning,
+                                        }, current_session_id)
+                                    elif block["type"] == "tool_call_chunk":
+                                        # Publish tool call chunk (only if session exists)
+                                        tool_call = block.get("tool_call", {})
+                                        await self._safe_publish(EventType.TOOL_CALLED, {
+                                            "session_id": current_session_id,
+                                            "tool": tool_call.get("name", ""),
+                                            "arguments": tool_call.get("args", {}),
+                                        }, current_session_id)
+                                    elif block["type"] == "text":
+                                        # Collect text tokens (don't publish individually to avoid duplication)
+                                        token = block.get("text", "")
+                                        if token:
+                                            text_tokens.append(token)
+                                            accumulated_content += token
+                                
+                                # Publish content_blocks event for structured streaming (includes all blocks)
+                                # This is the single source of truth - frontend processes this
+                                # Only publish if session still exists
+                                if content_blocks:
+                                    await self._safe_publish(EventType.LLM_STREAM_TOKEN, {
+                                        "session_id": current_session_id,
+                                        "content_blocks": content_blocks,  # Structured blocks pattern
+                                        "accumulated": accumulated_content,
+                                        # Also include token for backward compatibility (only text tokens)
+                                        "token": "".join(text_tokens) if text_tokens else None,
+                                    }, current_session_id)
+                            except Exception as e:
+                                self.logger.warning(
+                                    f"Error processing content_blocks: {e}",
+                                    exc_info=True
+                                )
+                                continue
                     
                     # Stream LLM start
                     elif event_name == "on_chat_model_start":
-                        await publish(EventType.LLM_STREAM_START, {
-                            "session_id": self.session_id,
+                        # Only publish if session still exists
+                        await self._safe_publish(EventType.LLM_STREAM_START, {
+                            "session_id": current_session_id,
                             "model": event_data.get("name", ""),
-                        })
+                        }, current_session_id)
                     
                     # Stream LLM end and capture reasoning
                     elif event_name == "on_chat_model_end":
@@ -1462,7 +1523,7 @@ Available tools:
                             reasoning_content = additional_kwargs.get("reasoning_content")
                         
                         # Record LLM usage metrics
-                        if self.session_id:
+                        if current_session_id:
                             try:
                                 from agent.observability.llm_metrics import get_llm_metrics
                                 
@@ -1529,7 +1590,7 @@ Available tools:
                                 # This ensures we at least count the number of calls
                                 metrics = get_llm_metrics()
                                 metrics.record_usage(
-                                    session_id=self.session_id,
+                                    session_id=current_session_id,
                                     model=model_name,
                                     prompt_tokens=prompt_tokens,
                                     completion_tokens=completion_tokens,
@@ -1538,90 +1599,96 @@ Available tools:
                                 )
                                 self.logger.debug(
                                     f"Recorded LLM metrics: model={model_name}, "
-                                    f"tokens={total_tokens}, calls=1, session={self.session_id}"
+                                    f"tokens={total_tokens}, calls=1, session={current_session_id}"
                                 )
                             except Exception as e:
                                 self.logger.warning(f"Failed to track LLM metrics: {e}", exc_info=True)
                         
-                        await publish(EventType.LLM_STREAM_END, {
-                            "session_id": self.session_id,
+                        # Only publish if session still exists
+                        await self._safe_publish(EventType.LLM_STREAM_END, {
+                            "session_id": current_session_id,
                             "reasoning": str(reasoning_content) if reasoning_content else None,
-                        })
+                        }, current_session_id)
                         
-                        # Also publish reasoning separately if found
+                        # Also publish reasoning separately if found (only if session exists)
                         if reasoning_content:
-                            await publish(EventType.LLM_REASONING, {
-                                "session_id": self.session_id,
+                            await self._safe_publish(EventType.LLM_REASONING, {
+                                "session_id": current_session_id,
                                 "content": str(reasoning_content),
-                            })
+                            }, current_session_id)
                     
                     # Stream tool start
                     elif event_name == "on_tool_start":
                         tool_name = event.get("name", "") or event_name_full or event_data.get("name", "")
                         tool_input = event_data.get("input", {})
                         
-                        await publish(EventType.TOOL_STREAM_START, {
-                            "session_id": self.session_id,
+                        # Only publish if session still exists
+                        await self._safe_publish(EventType.TOOL_STREAM_START, {
+                            "session_id": current_session_id,
                             "tool": tool_name,
                             "input": tool_input,
-                        })
+                        }, current_session_id)
                         
-                        # Also publish as regular tool called event
-                        await publish(EventType.TOOL_CALLED, {
-                            "session_id": self.session_id,
+                        # Also publish as regular tool called event (only if session exists)
+                        await self._safe_publish(EventType.TOOL_CALLED, {
+                            "session_id": current_session_id,
                             "tool": tool_name,
                             "arguments": tool_input,
-                        })
+                        }, current_session_id)
                     
                     # Stream tool end
                     elif event_name == "on_tool_end":
                         tool_name = event_data.get("name", "") or event.get("name", "")
                         tool_output = event_data.get("output", "")
                         
-                        await publish(EventType.TOOL_STREAM_END, {
-                            "session_id": self.session_id,
+                        # Only publish if session still exists
+                        await self._safe_publish(EventType.TOOL_STREAM_END, {
+                            "session_id": current_session_id,
                             "tool": tool_name,
                             "output": str(tool_output)[:500],  # Limit output length
-                        })
+                        }, current_session_id)
                         
-                        # Also publish tool result
-                        await publish(EventType.TOOL_RESULT, {
-                            "session_id": self.session_id,
+                        # Also publish tool result (only if session exists)
+                        await self._safe_publish(EventType.TOOL_RESULT, {
+                            "session_id": current_session_id,
                             "tool": tool_name,
                             "output": str(tool_output)[:500],
                             "success": True,
-                        })
+                        }, current_session_id)
                     
                     # Stream tool error
                     elif event_name == "on_tool_error":
                         tool_name = event_data.get("name", "") or event.get("name", "")
                         error = event_data.get("error", "")
                         
-                        await publish(EventType.TOOL_STREAM_ERROR, {
-                            "session_id": self.session_id,
+                        # Only publish if session still exists
+                        await self._safe_publish(EventType.TOOL_STREAM_ERROR, {
+                            "session_id": current_session_id,
                             "tool": tool_name,
                             "error": str(error),
-                        })
+                        }, current_session_id)
                         
-                        # Also publish as tool result with error
-                        await publish(EventType.TOOL_RESULT, {
-                            "session_id": self.session_id,
+                        # Also publish as tool result with error (only if session exists)
+                        await self._safe_publish(EventType.TOOL_RESULT, {
+                            "session_id": current_session_id,
                             "tool": tool_name,
                             "error": str(error),
                             "success": False,
-                        })
+                        }, current_session_id)
                     
                     # Stream chain events - capture final output from AgentExecutor chain
                     elif event_name == "on_chain_start":
                         chain_name = event_name_full or event_data.get("name", "")
                         if "AgentExecutor" in chain_name:
-                            await publish(EventType.EXECUTION_STARTED, {
-                                "session_id": self.session_id,
-                            })
-                        await publish(EventType.CHAIN_STREAM_START, {
-                            "session_id": self.session_id,
+                            # Only publish if session still exists
+                            await self._safe_publish(EventType.EXECUTION_STARTED, {
+                                "session_id": current_session_id,
+                            }, current_session_id)
+                        # Only publish if session still exists
+                        await self._safe_publish(EventType.CHAIN_STREAM_START, {
+                            "session_id": current_session_id,
                             "chain": chain_name,
-                        })
+                        }, current_session_id)
                     
                     elif event_name == "on_chain_end":
                         chain_name = event_name_full or event_data.get("name", "")
@@ -1644,21 +1711,25 @@ Available tools:
                                             final_output = msg["content"]
                                             break
                             
-                            await publish(EventType.EXECUTION_COMPLETED, {
-                                "session_id": self.session_id,
+                            # Only publish if session still exists
+                            await self._safe_publish(EventType.EXECUTION_COMPLETED, {
+                                "session_id": current_session_id,
                                 "success": True,
-                            })
+                            }, current_session_id)
                         
-                        await publish(EventType.CHAIN_STREAM_END, {
-                            "session_id": self.session_id,
+                        # Only publish if session still exists
+                        await self._safe_publish(EventType.CHAIN_STREAM_END, {
+                            "session_id": current_session_id,
                             "chain": chain_name,
-                        })
+                        }, current_session_id)
                 
                 # Use last_chain_output as result if available, otherwise use accumulated_content
                 if last_chain_output:
                     result = last_chain_output
                 elif accumulated_content:
-                    result = {"output": accumulated_content}
+                    # Use accumulated_content directly as final_output, don't wrap in dict
+                    final_output = accumulated_content
+                    result = {"output": accumulated_content}  # Keep for intermediate_steps extraction
                 else:
                     # Fallback: invoke to get result (shouldn't happen with astream_events)
                     self.logger.warning("No output from astream_events, falling back to invoke")
@@ -1671,7 +1742,7 @@ Available tools:
                 
                 self.logger.debug(
                     f"AgentExecutor result type={type(result)}, keys={list(result.keys()) if isinstance(result, dict) else 'N/A'}",
-                    extra={"session_id": self.session_id}
+                    extra={"session_id": current_session_id}
                 )
                 
                 # Extract final output and intermediate steps from AgentExecutor result
@@ -1682,10 +1753,23 @@ Available tools:
                 if isinstance(result, dict):
                     # AgentExecutor typically returns {"output": "...", "intermediate_steps": [...]}
                     if "output" in result:
-                        final_output = result["output"]
+                        output_value = result["output"]
+                        # Ensure we extract text, not a dict
+                        if isinstance(output_value, str):
+                            final_output = output_value
+                        elif isinstance(output_value, dict):
+                            # If output is a dict, try to extract text from it
+                            final_output = output_value.get("content") or output_value.get("text") or str(output_value)
+                            self.logger.warning(
+                                f"Output is a dict, extracted text: {type(output_value)}",
+                                extra={"session_id": current_session_id}
+                            )
+                        else:
+                            final_output = str(output_value)
+                        
                         self.logger.info(
                             f"✅ Extracted final output from AgentExecutor result['output']: {len(final_output) if final_output else 0} chars",
-                            extra={"session_id": self.session_id}
+                            extra={"session_id": current_session_id}
                         )
                     
                     # Extract intermediate steps if available
@@ -1693,14 +1777,14 @@ Available tools:
                         intermediate_steps = result["intermediate_steps"]
                         self.logger.info(
                             f"✅ Extracted {len(intermediate_steps)} intermediate steps",
-                            extra={"session_id": self.session_id, "steps_count": len(intermediate_steps)}
+                            extra={"session_id": current_session_id, "steps_count": len(intermediate_steps)}
                         )
                     # Some versions may return "messages" key
                     elif "messages" in result:
                         messages = result["messages"]
                         self.logger.debug(
                             f"Found {len(messages)} messages in result",
-                            extra={"session_id": self.session_id}
+                            extra={"session_id": current_session_id}
                         )
                         
                         # Get the last message which should be the final response
@@ -1709,14 +1793,14 @@ Available tools:
                                 final_output = msg.content
                                 self.logger.info(
                                     f"✅ Extracted final output from message {len(messages)-idx-1}: {len(final_output)} chars",
-                                    extra={"session_id": self.session_id, "message_type": type(msg).__name__}
+                                    extra={"session_id": current_session_id, "message_type": type(msg).__name__}
                                 )
                                 break
                             elif isinstance(msg, dict) and "content" in msg:
                                 final_output = msg["content"]
                                 self.logger.info(
                                     f"✅ Extracted final output from message dict {len(messages)-idx-1}: {len(final_output)} chars",
-                                    extra={"session_id": self.session_id}
+                                    extra={"session_id": current_session_id}
                                 )
                                 break
                         
@@ -1725,40 +1809,86 @@ Available tools:
                             if hasattr(msg, "tool_calls") and msg.tool_calls:
                                 self.logger.info(
                                     f"🔧 Found tool_calls in message: {len(msg.tool_calls)} calls",
-                                    extra={"session_id": self.session_id, "tool_calls": msg.tool_calls}
+                                    extra={"session_id": current_session_id, "tool_calls": msg.tool_calls}
                                 )
                                 # Extract tool call info (LangChain format)
                                 tool_call = msg.tool_calls[0]
                                 tool_name = tool_call.get("name", "") if isinstance(tool_call, dict) else getattr(tool_call, "name", "")
                                 tool_args = tool_call.get("args", {}) if isinstance(tool_call, dict) else getattr(tool_call, "args", {})
                                 
-                                await publish(EventType.TOOL_CALLED, {
-                                    "session_id": self.session_id,
+                                # Only publish if session still exists
+                                await self._safe_publish(EventType.TOOL_CALLED, {
+                                    "session_id": current_session_id,
                                     "tool": tool_name,
                                     "arguments": tool_args,
-                                })
+                                }, current_session_id)
                     else:
-                        # Result is not in expected format, try to extract as string
-                        final_output = str(result.get("result", result))
-                        self.logger.warning(
-                            f"Result is not in expected format, using result/string: {type(result)}",
-                            extra={"session_id": self.session_id}
-                        )
+                        # Result is not in expected format, try to extract text from various possible keys
+                        # Check common keys that might contain the response text
+                        possible_keys = ["result", "response", "text", "content", "message"]
+                        extracted = None
+                        for key in possible_keys:
+                            if key in result and isinstance(result[key], str):
+                                extracted = result[key]
+                                break
+                        
+                        if extracted:
+                            final_output = extracted
+                            self.logger.info(
+                                f"✅ Extracted final output from result['{key}']: {len(final_output)} chars",
+                                extra={"session_id": current_session_id}
+                            )
+                        else:
+                            # Last resort: try to find any string value in the dict
+                            for value in result.values():
+                                if isinstance(value, str) and value:
+                                    final_output = value
+                                    self.logger.warning(
+                                        f"Extracted text from unexpected key in result: {type(result)}",
+                                        extra={"session_id": current_session_id}
+                                    )
+                                    break
+                            
+                            # If still no text found, use accumulated_content or empty string
+                            if not final_output:
+                                final_output = accumulated_content or ""
+                                self.logger.warning(
+                                    f"Could not extract text from result, using accumulated_content: {type(result)}",
+                                    extra={"session_id": current_session_id, "result_keys": list(result.keys())}
+                                )
                 else:
-                    # Result is not a dict, convert to string
-                    final_output = str(result)
+                    # Result is not a dict, try to extract text from it
+                    if hasattr(result, "content"):
+                        final_output = str(result.content) if result.content else ""
+                    elif hasattr(result, "text"):
+                        final_output = str(result.text) if result.text else ""
+                    else:
+                        # Last resort: convert to string, but try to avoid dict representation
+                        result_str = str(result)
+                        # If it looks like a dict representation, try to extract content
+                        if result_str.startswith("{") and "'output'" in result_str:
+                            # Try to extract from dict-like string (shouldn't happen, but handle it)
+                            import re
+                            match = re.search(r"'output':\s*['\"]([^'\"]+)['\"]", result_str)
+                            if match:
+                                final_output = match.group(1)
+                            else:
+                                final_output = result_str
+                        else:
+                            final_output = result_str
+                    
                     self.logger.warning(
-                        f"Result is not a dict, converting to string: {type(result)}",
-                        extra={"session_id": self.session_id}
+                        f"Result is not a dict, extracted text: {type(result)}",
+                        extra={"session_id": current_session_id}
                     )
                 
-                # Publish final response if we have it
+                # Publish final response if we have it (only if session still exists)
                 if final_output:
-                    await publish(EventType.LLM_RESPONSE, {
-                        "session_id": self.session_id,
+                    await self._safe_publish(EventType.LLM_RESPONSE, {
+                        "session_id": current_session_id,
                         "content": final_output,
                         "streaming": False,
-                    })
+                    }, current_session_id)
                     
             except Exception as e:
                 # Log error during agent execution
@@ -1766,7 +1896,7 @@ Available tools:
                 msg = f"Error during AgentExecutor execution: {str(e)}"
                 self.logger.error(
                     msg,
-                    extra={"session_id": self.session_id},
+                    extra={"session_id": current_session_id},
                     exc_info=True
                 )
                 
@@ -1779,7 +1909,7 @@ Available tools:
                             final_output = result["output"]
                             self.logger.info(
                                 f"✅ Extracted partial output from error result: {len(final_output) if final_output else 0} chars",
-                                extra={"session_id": self.session_id}
+                                extra={"session_id": current_session_id}
                             )
                 except Exception:
                     pass
@@ -1792,17 +1922,17 @@ Available tools:
             if accumulated_content and not final_output:
                 final_output = accumulated_content
             
-            # Save conversation to memory (for next interaction)
-            self._save_context(user_message, final_output or "")
+            # Note: message_history is per-session and not persisted across executions
+            # The storage system handles persistence of messages
             
             # Get reasoning and debug summary from callback
-            reasoning_debug_summary = self.reasoning_callback.get_summary()
+            reasoning_debug_summary = reasoning_callback.get_summary()
             
             duration = time.time() - start_time
             log_event(
                 self.logger,
                 "tool_calling_executor.completed",
-                session_id=self.session_id,
+                session_id=current_session_id,
                 duration_ms=duration * 1000,
                 success=True,
                 response_length=len(final_output) if final_output else 0,
@@ -1852,7 +1982,7 @@ Available tools:
             log_event(
                 self.logger,
                 "tool_calling_executor.error",
-                session_id=self.session_id,
+                session_id=current_session_id,
                 duration_ms=duration * 1000,
                 error=msg,
                 level="ERROR",
@@ -1861,3 +1991,46 @@ Available tools:
                 "success": False,
                 "error": f"Execution error: {msg}",
             }
+
+
+# Singleton executor instance
+_shared_executor: Optional[LangChainExecutor] = None
+
+
+async def get_shared_executor(
+    config: Optional[AgentConfig] = None,
+    tool_registry: Optional[ToolRegistry] = None,
+    storage: Optional[Storage] = None,
+) -> LangChainExecutor:
+    """Get or create shared LangChainExecutor instance (singleton).
+    
+    This function returns a shared executor instance that can be used across
+    multiple sessions, reducing resource usage and initialization time.
+    
+    Args:
+        config: Agent configuration (required on first call)
+        tool_registry: Tool registry (required on first call)
+        storage: Optional Storage instance for session existence checks
+        
+    Returns:
+        Shared LangChainExecutor instance
+        
+    Raises:
+        ValueError: If config or tool_registry are not provided on first call
+    """
+    global _shared_executor
+    
+    if _shared_executor is None:
+        if config is None or tool_registry is None:
+            raise ValueError(
+                "config and tool_registry must be provided on first call to get_shared_executor()"
+            )
+        _shared_executor = LangChainExecutor(
+            config=config,
+            tool_registry=tool_registry,
+            storage=storage,
+        )
+        logger = get_logger("langchain_executor", "executor")
+        logger.info("✅ Created shared LangChainExecutor instance (singleton)")
+    
+    return _shared_executor

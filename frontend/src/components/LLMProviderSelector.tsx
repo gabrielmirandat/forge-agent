@@ -60,13 +60,19 @@ export function LLMProviderSelector() {
     setSuccess(null);
 
     try {
-      await api.switchLLMProvider(providerId);
+      console.log('Switching to provider:', providerId);
+      const result = await api.switchLLMProvider(providerId);
+      console.log('Switch result:', result);
       const provider = providers.find((p) => p.id === providerId);
       setSuccess(`Switched to ${provider?.name || providerId}`);
+      // Reload config to get updated model
       await loadConfig();
+      // Reload providers to ensure we have latest status
+      await loadProviders();
       // Auto-hide success message after 3 seconds
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
+      console.error('Failed to switch provider:', err);
       setError(err instanceof Error ? err.message : 'Failed to switch provider');
       setTimeout(() => setError(null), 5000);
     } finally {
@@ -82,7 +88,9 @@ export function LLMProviderSelector() {
     );
   }
 
-  const currentProvider = providers.find((p) => p.id === currentConfig.provider);
+  // Find provider by model name, not provider ID, since provider is always "ollama"
+  // but provider.id can be "ollama", "ollama.qwen", "ollama.mistral", etc.
+  const currentProvider = providers.find((p) => p.model === currentConfig.model);
 
   return (
     <div>
@@ -171,7 +179,9 @@ export function LLMProviderSelector() {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
             {providers.map((provider) => {
-              const isActive = currentConfig.provider === provider.id;
+              // Compare by model name, not provider ID, since provider is always "ollama"
+              // but provider.id can be "ollama", "ollama.qwen", "ollama.mistral", etc.
+              const isActive = currentConfig.model === provider.model;
               return (
                 <button
                   key={provider.id}

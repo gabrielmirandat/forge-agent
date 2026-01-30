@@ -16,7 +16,8 @@ export type EventHandler = (event: Event) => void;
 
 export function useEventStream(
   onEvent: EventHandler,
-  enabled: boolean = true
+  enabled: boolean = true,
+  sessionId: string | null | undefined = null
 ): { connected: boolean; error: string | null } {
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -33,12 +34,18 @@ export function useEventStream(
   }, [onEvent]);
 
   useEffect(() => {
-    if (!enabled) {
+    // session_id is now REQUIRED - don't connect without it
+    if (!enabled || !sessionId) {
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
         eventSourceRef.current = null;
       }
       setConnected(false);
+      if (!sessionId && enabled) {
+        setError("Session ID is required for event stream");
+      } else {
+        setError(null);
+      }
       return;
     }
 
@@ -48,9 +55,9 @@ export function useEventStream(
         eventSourceRef.current.close();
       }
 
-      // Determine SSE URL
+      // Determine SSE URL with session_id filter (REQUIRED)
       // Use relative path - Vite proxy will handle it
-      const sseUrl = '/api/v1/events/event';
+      const sseUrl = `/api/v1/events/event?session_id=${encodeURIComponent(sessionId)}`;
 
       console.log('Connecting to SSE:', sseUrl);
 
@@ -114,7 +121,7 @@ export function useEventStream(
       }
       setConnected(false);
     };
-  }, [enabled]); // Removed onEvent from dependencies - using ref instead
+  }, [enabled, sessionId]); // Reconnect when sessionId changes
 
   return { connected, error };
 }

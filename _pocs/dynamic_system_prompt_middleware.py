@@ -34,7 +34,7 @@ def user_role_prompt(request: ModelRequest) -> str:
         prompt = f"{base_prompt} Explain concepts simply and avoid jargon."
     else:
         prompt = base_prompt
-    
+
     # Debug: print which prompt is being used
     print(f"📝 Dynamic prompt for role '{user_role}': {prompt}")
     return prompt
@@ -85,7 +85,7 @@ if __name__ == "__main__":
     
     # Test 3: Default role (should get standard response)
     print("\n3. Testing with default role:")
-    result = agent.invoke(
+result = agent.invoke(
         {"messages": [HumanMessage(content="Explain machine learning")]},
         context=Context(user_role="user")
     )

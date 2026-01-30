@@ -15,6 +15,7 @@ from agent.observability import (
     trace_span,
 )
 from agent.runtime.bus import EventType, publish
+from agent.runtime.event_helpers import publish_if_session_exists
 from agent.storage import MessageRole, NotFoundError, Storage, StorageError
 from api.dependencies import get_config, get_storage, get_tool_registry
 from api.schemas.session import (
@@ -28,6 +29,9 @@ from api.schemas.session import (
 
 router = APIRouter()
 logger = get_logger("api.session", "api")
+
+
+from agent.runtime.event_helpers import session_exists
 
 
 @router.post("/sessions", response_model=CreateSessionResponse, status_code=status.HTTP_201_CREATED)
@@ -251,6 +255,9 @@ async def get_session(
         duration = time.time() - start_time
         api_requests_total.labels(endpoint="/sessions/{session_id}", method="GET", status="404").inc()
         api_request_duration_seconds.labels(endpoint="/sessions/{session_id}").observe(duration)
+        
+        # Log at debug level instead of error - 404 is expected when session was deleted
+        logger.debug(f"Session not found (expected if deleted): {session_id}")
 
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -313,26 +320,29 @@ async def _process_message_background(
         config = get_config()
         tool_registry = get_tool_registry()
         
-        from agent.runtime.langchain_executor import LangChainExecutor
+        from agent.runtime.langchain_executor import get_shared_executor
         
-        # Publish execution started event
-        await publish(EventType.EXECUTION_STARTED, {
-            "session_id": session_id,
-        })
-        
-        # LangChainExecutor loads all LLM providers and tools through LangChain
-        # No need to pass llm_provider - it's created internally from config
-        executor = LangChainExecutor(
-            config=config,
-            tool_registry=tool_registry,
-            session_id=session_id,
-            max_iterations=config.runtime.max_iterations,
+        # Publish execution started event (only if session still exists)
+        await publish_if_session_exists(
+            EventType.EXECUTION_STARTED,
+            {"session_id": session_id},
+            storage,
         )
         
-        # Run LangChain agent execution
+        # Get shared executor instance (singleton) - reduces resource usage
+        # The executor is shared across all sessions, with session_id passed to run()
+        executor = await get_shared_executor(
+            config=config,
+            tool_registry=tool_registry,
+            storage=storage,  # Pass storage to enable session existence checks
+        )
+        
+        # Run LangChain agent execution with session_id
         result = await executor.run(
             user_message=request.content,
             conversation_history=conversation_history if conversation_history else None,
+            session_id=session_id,  # Pass session_id to run() method
+            storage=storage,
         )
         
         # Extract results
@@ -349,32 +359,54 @@ async def _process_message_background(
                 level="WARNING",
             )
         
-        # Publish execution completed event
-        await publish(EventType.EXECUTION_COMPLETED, {
-            "session_id": session_id,
-            "success": result.get("success", False),
-            "iterations": result.get("iterations", 0),
-        })
+        # Check if session still exists before continuing
+        if not await session_exists(storage, session_id):
+            logger.warning(f"[{request_id}] Session {session_id} was deleted during processing, stopping")
+            return
+        
+        # Publish execution completed event (only if session still exists)
+        await publish_if_session_exists(
+            EventType.EXECUTION_COMPLETED,
+            {
+                "session_id": session_id,
+                "success": result.get("success", False),
+                "iterations": result.get("iterations", 0),
+            },
+            storage,
+        )
         
         # Step 4: Save assistant message (even if empty, to maintain conversation flow)
+        # Check again before saving (session might have been deleted between checks)
+        if not await session_exists(storage, session_id):
+            logger.warning(f"[{request_id}] Session {session_id} was deleted before saving message, stopping")
+            return
+        
         assistant_message = await storage.add_message(
             session_id=session_id,
             role=MessageRole.ASSISTANT,
             content=assistant_content if assistant_content else "(No response generated)",
         )
         
-        # Publish event: assistant message added
-        await publish(EventType.SESSION_MESSAGE_ADDED, {
-            "session_id": session_id,
-            "message_id": assistant_message.message_id,
-            "role": "assistant",
-        })
+        # Publish event: assistant message added (only if session still exists)
+        await publish_if_session_exists(
+            EventType.SESSION_MESSAGE_ADDED,
+            {
+                "session_id": session_id,
+                "message_id": assistant_message.message_id,
+                "role": "assistant",
+            },
+            storage,
+        )
         
-        # Publish session updated event
-        await publish(EventType.SESSION_UPDATED, {
-            "session_id": session_id,
-            "message_count": len(session.messages) + 2,  # +2 for user and assistant
-        })
+        # Publish session updated event (only if session still exists)
+        await publish_if_session_exists(
+            EventType.SESSION_UPDATED,
+            {
+                "session_id": session_id,
+                "message_count": len(session.messages) + 2,  # +2 for user and assistant
+            },
+            storage,
+        )
 
         # Step 5: Update session title if it's the first message
         if len(session.messages) == 0:
@@ -467,12 +499,16 @@ async def send_message(
             content=request.content,
         )
         
-        # Publish event: message added
-        await publish(EventType.SESSION_MESSAGE_ADDED, {
-            "session_id": session_id,
-            "message_id": user_message.message_id,
-            "role": "user",
-        })
+        # Publish event: message added (only if session still exists)
+        await publish_if_session_exists(
+            EventType.SESSION_MESSAGE_ADDED,
+            {
+                "session_id": session_id,
+                "message_id": user_message.message_id,
+                "role": "user",
+            },
+            storage,
+        )
         
         # Update session title if it's the first message
         if len(session.messages) == 0:
