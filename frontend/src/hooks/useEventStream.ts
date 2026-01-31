@@ -34,18 +34,15 @@ export function useEventStream(
   }, [onEvent]);
 
   useEffect(() => {
-    // session_id is now REQUIRED - don't connect without it
-    if (!enabled || !sessionId) {
+    // session_id is now REQUIRED - don't connect without it or if it's empty
+    // Also check if sessionId is an empty string (temporary session)
+    if (!enabled || !sessionId || sessionId === '') {
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
         eventSourceRef.current = null;
       }
       setConnected(false);
-      if (!sessionId && enabled) {
-        setError("Session ID is required for event stream");
-      } else {
-        setError(null);
-      }
+      setError(null); // Don't show error for empty sessionId - it's expected
       return;
     }
 
