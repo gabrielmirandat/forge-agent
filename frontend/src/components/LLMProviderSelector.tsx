@@ -60,13 +60,37 @@ export function LLMProviderSelector() {
     setSuccess(null);
 
     try {
-      console.log('Switching to provider:', providerId);
+      const provider = providers.find((p) => p.id === providerId);
+      console.log('Switching to provider:', {
+        providerId,
+        providerName: provider?.name,
+        expectedModel: provider?.model,
+        currentModel: currentConfig?.model
+      });
+      
       const result = await api.switchLLMProvider(providerId);
       console.log('Switch result:', result);
-      const provider = providers.find((p) => p.id === providerId);
-      setSuccess(`Switched to ${provider?.name || providerId}`);
-      // Reload config to get updated model
+      
+      // Reload config to get updated model - wait a bit for backend to update
+      await new Promise(resolve => setTimeout(resolve, 100));
       await loadConfig();
+      
+      // Verify the model actually changed
+      const newConfig = await api.getLLMConfig();
+      console.log('After switch - new config:', {
+        model: newConfig.model,
+        expectedModel: provider?.model,
+        match: newConfig.model === provider?.model
+      });
+      
+      if (newConfig.model !== provider?.model) {
+        console.warn('Model mismatch after switch:', {
+          expected: provider?.model,
+          actual: newConfig.model
+        });
+      }
+      
+      setSuccess(`Switched to ${provider?.name || providerId}`);
       // Reload providers to ensure we have latest status
       await loadProviders();
       // Auto-hide success message after 3 seconds
@@ -90,7 +114,12 @@ export function LLMProviderSelector() {
 
   // Find provider by model name, not provider ID, since provider is always "ollama"
   // but provider.id can be "ollama", "ollama.qwen", "ollama.mistral", etc.
-  const currentProvider = providers.find((p) => p.model === currentConfig.model);
+  // Use normalized comparison to handle case/whitespace differences
+  const currentModel = (currentConfig.model || '').trim().toLowerCase();
+  const currentProvider = providers.find((p) => {
+    const providerModel = (p.model || '').trim().toLowerCase();
+    return providerModel === currentModel;
+  });
 
   return (
     <div>
@@ -181,7 +210,22 @@ export function LLMProviderSelector() {
             {providers.map((provider) => {
               // Compare by model name, not provider ID, since provider is always "ollama"
               // but provider.id can be "ollama", "ollama.qwen", "ollama.mistral", etc.
-              const isActive = currentConfig.model === provider.model;
+              // Use strict comparison with trimmed and normalized strings
+              const currentModel = (currentConfig.model || '').trim().toLowerCase();
+              const providerModel = (provider.model || '').trim().toLowerCase();
+              const isActive = currentModel === providerModel;
+              
+              // Debug log to help identify comparison issues
+              if (process.env.NODE_ENV === 'development') {
+                console.log('Model comparison:', {
+                  currentModel,
+                  providerModel,
+                  isActive,
+                  providerId: provider.id,
+                  providerName: provider.name
+                });
+              }
+              
               return (
                 <button
                   key={provider.id}

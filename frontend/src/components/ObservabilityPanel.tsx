@@ -492,22 +492,22 @@ export function ObservabilityPanel() {
               </table>
             </div>
           ) : (
-            <>
-              {globalLLM.models_used.length > 0 && (
-                <div style={{ fontSize: '0.8rem', color: '#aaa', marginBottom: '0.25rem' }}>
-                  Models: {globalLLM.models_used.join(', ')}
-                </div>
-              )}
-              <div style={{ fontSize: '0.8rem', color: '#aaa' }}>
-                Total Tokens: {globalLLM.total_tokens.toLocaleString()}
-              </div>
-              <div style={{ fontSize: '0.8rem', color: '#aaa' }}>
-                Total Calls: {globalLLM.total_calls}
-              </div>
-              <div style={{ fontSize: '0.8rem', color: '#aaa' }}>
-                Active Sessions: {globalLLM.active_sessions}
-              </div>
-            </>
+            <div style={{ fontSize: '0.75rem', overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #333' }}>
+                    <th style={{ textAlign: 'left', padding: '0.25rem 0.5rem', color: '#888', fontWeight: '600' }}>Model</th>
+                    <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#888', fontWeight: '600' }}>Tokens</th>
+                    <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#888', fontWeight: '600' }}>Calls</th>
+                    <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#888', fontWeight: '600' }}>Sessions</th>
+                    <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#888', fontWeight: '600' }}>Last Used</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {/* No data rows - table shows only headers */}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       </div>
