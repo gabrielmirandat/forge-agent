@@ -10,17 +10,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 
-// CSS for blinking cursor animation
-const blinkStyle = document.createElement('style');
-blinkStyle.textContent = `
+// CSS for animations
+const animationStyle = document.createElement('style');
+animationStyle.textContent = `
   @keyframes blink {
     0%, 50% { opacity: 1; }
     51%, 100% { opacity: 0; }
   }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
 `;
-if (!document.head.querySelector('style[data-blink-cursor]')) {
-  blinkStyle.setAttribute('data-blink-cursor', 'true');
-  document.head.appendChild(blinkStyle);
+if (!document.head.querySelector('style[data-animations]')) {
+  animationStyle.setAttribute('data-animations', 'true');
+  document.head.appendChild(animationStyle);
 }
 
 // Function to normalize markdown content - remove extra spaces and normalize line breaks
@@ -272,6 +276,7 @@ export function ChatPage() {
   const [input, setInput] = useState('');
   const [streamingContent, setStreamingContent] = useState<string>(''); // Content being streamed in real-time
   const [intermediateChunks, setIntermediateChunks] = useState<Array<{type: string; content: string; timestamp: number}>>([]); // Intermediate chunks (reasoning, tool calls, etc)
+  const [waitingForResponse, setWaitingForResponse] = useState(false); // Track if we're waiting for first chunk
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
@@ -489,31 +494,10 @@ export function ChatPage() {
         console.log('💬 LLM generation started');
         setStreamingContent(''); // Reset streaming content for new message
         setIntermediateChunks([]); // Reset intermediate chunks for new message
+        setWaitingForResponse(true); // Show loading indicator until first chunk arrives
         shouldAutoScrollRef.current = true; // Enable auto-scroll during streaming
         
-        // Create placeholder assistant message in state (will be updated with tokens)
-        if (currentSession) {
-          const messageId = event.properties.message_id || `msg_${Date.now()}`;
-          const placeholderMessage: MessageResponse = {
-            message_id: messageId,
-            role: 'assistant',
-            content: '', // Will be filled by tokens
-            created_at: Date.now(), // Timestamp as number
-          };
-          
-          setCurrentSession((prev) => {
-            if (!prev) return prev;
-            // Check if message already exists (avoid duplicates)
-            const exists = prev.messages.some(m => m.message_id === messageId);
-            if (!exists) {
-              return {
-                ...prev,
-                messages: [...prev.messages, placeholderMessage],
-              };
-            }
-            return prev;
-          });
-        }
+        // Don't create placeholder message yet - wait for first token
         break;
       
       case 'llm.stream.token':
@@ -555,12 +539,13 @@ export function ChatPage() {
           setStreamingContent((prev) => {
             const updated = prev + newToken;
             
-            // Also update the message in state in real-time
+            // On first token, create assistant message and hide loading indicator
             const messageId = event.properties.message_id;
             if (messageId) {
               setCurrentSession((prevSession) => {
                 if (!prevSession) return prevSession;
                 const messageIndex = prevSession.messages.findIndex(m => m.message_id === messageId);
+                
                 if (messageIndex >= 0) {
                   // Update existing message
                   const updatedMessages = [...prevSession.messages];
@@ -572,8 +557,23 @@ export function ChatPage() {
                     ...prevSession,
                     messages: updatedMessages,
                   };
+                } else {
+                  // First token - create assistant message
+                  // Hide loading indicator now that we have content
+                  setWaitingForResponse(false);
+                  
+                  const assistantMessage: MessageResponse = {
+                    message_id: messageId,
+                    role: 'assistant',
+                    content: updated,
+                    created_at: Date.now(),
+                  };
+                  
+                  return {
+                    ...prevSession,
+                    messages: [...prevSession.messages, assistantMessage],
+                  };
                 }
-                return prevSession;
               });
             }
             
@@ -600,8 +600,9 @@ export function ChatPage() {
           ]);
         }
         
-        // Clear streaming content immediately
+        // Clear streaming content and loading indicator
         setStreamingContent('');
+        setWaitingForResponse(false);
         if (pendingStreamingClearRef.current !== null) {
           clearTimeout(pendingStreamingClearRef.current);
           pendingStreamingClearRef.current = null;
@@ -1265,6 +1266,28 @@ export function ChatPage() {
                   {/* Removed plan_result display - no longer used with direct tool calling */}
                 </div>
               ))}
+              {/* Show loading indicator while waiting for first chunk */}
+              {waitingForResponse && !streamingContent && (
+                <div
+                  style={{
+                    marginBottom: '1rem',
+                    display: 'flex',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    width: '100%',
+                  }}
+                >
+                  <div
+                    style={{
+                      width: '8px',
+                      height: '8px',
+                      borderRadius: '50%',
+                      background: '#19c37d',
+                      animation: 'pulse 1.5s ease-in-out infinite',
+                    }}
+                  />
+                </div>
+              )}
               {/* Show streaming content in real-time while streaming */}
               {/* The message is also updated in state by tokens, but we show streamingContent for real-time updates */}
               {/* streamingContent will be cleared after llm.stream.end, but by then the message is in state */}
