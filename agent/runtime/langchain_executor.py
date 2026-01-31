@@ -1997,6 +1997,20 @@ Available tools:
 _shared_executor: Optional[LangChainExecutor] = None
 
 
+def clear_shared_executor() -> None:
+    """Clear the shared executor cache to force recreation with new config.
+    
+    This should be called when the LLM model or configuration changes
+    to ensure the executor uses the new model.
+    """
+    global _shared_executor
+    if _shared_executor is not None:
+        logger = get_logger("langchain_executor", "executor")
+        old_model = _shared_executor.config.llm.model if _shared_executor.config else "unknown"
+        logger.info(f"🔄 Clearing shared executor cache (old model: {old_model})")
+        _shared_executor = None
+
+
 async def get_shared_executor(
     config: Optional[AgentConfig] = None,
     tool_registry: Optional[ToolRegistry] = None,
@@ -2007,9 +2021,12 @@ async def get_shared_executor(
     This function returns a shared executor instance that can be used across
     multiple sessions, reducing resource usage and initialization time.
     
+    If the executor exists but the model has changed, it will be recreated
+    with the new model configuration.
+    
     Args:
-        config: Agent configuration (required on first call)
-        tool_registry: Tool registry (required on first call)
+        config: Agent configuration (required on first call or when model changes)
+        tool_registry: Tool registry (required on first call or when model changes)
         storage: Optional Storage instance for session existence checks
         
     Returns:
@@ -2019,6 +2036,17 @@ async def get_shared_executor(
         ValueError: If config or tool_registry are not provided on first call
     """
     global _shared_executor
+    
+    # Check if executor exists and if model has changed
+    if _shared_executor is not None and config is not None:
+        current_model = _shared_executor.config.llm.model if _shared_executor.config else None
+        new_model = config.llm.model if config else None
+        
+        # If model changed, clear executor to force recreation
+        if current_model != new_model:
+            logger = get_logger("langchain_executor", "executor")
+            logger.info(f"🔄 Model changed from {current_model} to {new_model}, recreating executor")
+            _shared_executor = None
     
     if _shared_executor is None:
         if config is None or tool_registry is None:
@@ -2031,6 +2059,7 @@ async def get_shared_executor(
             storage=storage,
         )
         logger = get_logger("langchain_executor", "executor")
-        logger.info("✅ Created shared LangChainExecutor instance (singleton)")
+        model_name = config.llm.model if config else "unknown"
+        logger.info(f"✅ Created shared LangChainExecutor instance (singleton) with model: {model_name}")
     
     return _shared_executor

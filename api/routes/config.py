@@ -201,6 +201,10 @@ async def update_llm_config(
         # Clear LLM provider cache to force reload
         deps._llm_provider_cache = None
         
+        # Clear LangChain executor cache to force recreation with new model
+        from agent.runtime.langchain_executor import clear_shared_executor
+        clear_shared_executor()
+        
         # Publish event
         await publish(EventType.SESSION_UPDATED, {
             "type": "llm_provider_changed",
@@ -296,6 +300,10 @@ async def switch_llm_provider(
         
         # Clear LLM provider cache
         deps._llm_provider_cache = None
+        
+        # Clear LangChain executor cache to force recreation with new model
+        from agent.runtime.langchain_executor import clear_shared_executor
+        clear_shared_executor()
         
         # Publish event
         await publish(EventType.SESSION_UPDATED, {
