@@ -75,6 +75,32 @@ async def startup_event():
         else:
             print(f"❌ Failed to ensure Docker image for MCP server: {mcp_name}")
     
+    # Initialize model manager - pre-initialize all models with health checks
+    from agent.llm.model_manager import initialize_model_manager
+    from pathlib import Path
+    
+    config_dir = Path("config")
+    print("🔄 Pre-initializing all available models...")
+    model_manager = await initialize_model_manager(config_dir)
+    
+    # Log model initialization results
+    all_models = model_manager.get_all_models()
+    healthy_models = model_manager.get_healthy_models()
+    print(f"✅ Model manager initialized: {len(healthy_models)}/{len(all_models)} models healthy")
+    for provider_id, model_instance in all_models.items():
+        status_icon = "✅" if model_instance.health_status == "healthy" else "❌"
+        print(f"   {status_icon} {model_instance.model_name} ({provider_id}): {model_instance.health_status}")
+        if model_instance.capabilities:
+            caps = []
+            if model_instance.capabilities.get("tool_calling"):
+                caps.append("tools")
+            if model_instance.capabilities.get("image_inputs"):
+                caps.append("images")
+            if model_instance.capabilities.get("reasoning_output"):
+                caps.append("reasoning")
+            if caps:
+                print(f"      Capabilities: {', '.join(caps)}")
+    
     # Initialize tool registry
     await initialize_tool_registry(config)
     

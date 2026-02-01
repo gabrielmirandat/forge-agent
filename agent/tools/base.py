@@ -7,7 +7,7 @@ Executor component. The LLM and Planner have no direct access to tools.
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel
 
@@ -125,6 +125,11 @@ class ToolRegistry:
     def __init__(self):
         """Initialize empty registry."""
         self._tools: Dict[str, Tool] = {}
+        # Cache for LangChain tools to avoid recreating MultiServerMCPClient
+        # Key: tuple of (workspace_path, sorted_server_names, image_versions) for cache invalidation
+        # Value: List of LangChain tools
+        # Note: Cache includes image versions to invalidate when MCP server images are updated
+        self._langchain_tools_cache: Optional[Tuple[Tuple[str, Tuple[str, ...], Tuple[str, ...]], List[Any]]] = None
 
     def register(self, tool: Tool) -> None:
         """Register a tool.
@@ -204,6 +209,9 @@ class ToolRegistry:
         Uses MultiServerMCPClient from langchain-mcp-adapters to load tools directly from MCP servers.
         Queries ALL configured MCP servers dynamically to ensure all tools are available.
         
+        Tools are cached to avoid recreating MultiServerMCPClient on every call.
+        Cache is invalidated when workspace path or enabled servers change.
+        
         Args:
             session_id: Optional session ID for tool context (not used for MCP tools)
             config: AgentConfig to get MCP server configurations and workspace path
@@ -226,11 +234,36 @@ class ToolRegistry:
             raise ValueError("AgentConfig 'config' is required to load MCP tools via adapters")
 
         logger = logging.getLogger(__name__)
+        
+        # Check cache validity
+        workspace_base = Path(config.workspace.base_path).expanduser().resolve()
+        all_mcp_configs = config.mcp or {}
+        enabled_servers = sorted([
+            name for name, mcp_config in all_mcp_configs.items()
+            if mcp_config.get("enabled") is not False
+        ])
+        # Include image versions in cache key to invalidate when images are updated
+        image_versions = tuple([
+            all_mcp_configs[name].get("image", "unknown")
+            for name in enabled_servers
+            if all_mcp_configs[name].get("type") == "docker"
+        ])
+        cache_key = (str(workspace_base), tuple(enabled_servers), image_versions)
+        
+        # Return cached tools if available and still valid
+        if self._langchain_tools_cache is not None:
+            cached_key, cached_tools = self._langchain_tools_cache
+            if cached_key == cache_key:
+                logger.debug(
+                    f"Returning cached LangChain tools ({len(cached_tools)} tools from {len(enabled_servers)} servers)"
+                )
+                return cached_tools
+            else:
+                logger.debug("Cache invalidated - workspace or server configuration changed")
 
         # Build MultiServerMCPClient configuration from config directly
         # This ensures we query ALL configured servers, not just already-connected ones
         mcp_configs: Dict[str, Dict[str, Any]] = {}
-        workspace_base = Path(config.workspace.base_path).expanduser().resolve()
 
         # Get all MCP server configurations from config
         all_mcp_configs = config.mcp or {}
@@ -348,9 +381,25 @@ class ToolRegistry:
             f"Querying {len(mcp_configs)} MCP server(s) for tools: {list(mcp_configs.keys())}"
         )
 
+        # Create path interceptor to normalize tool parameters
+        # This allows LLM to use natural paths (e.g., "forge-agent") while
+        # the interceptor converts them to correct Docker paths (e.g., "/workspace/forge-agent")
+        tool_interceptors = []
+        try:
+            from agent.tools.mcp_interceptor import MCPPathInterceptor
+            path_interceptor = MCPPathInterceptor(workspace_base=workspace_base)
+            tool_interceptors.append(path_interceptor)
+            logger.debug("Path normalization interceptor enabled")
+        except ImportError as e:
+            logger.warning(f"Could not create path interceptor: {e}. Path normalization disabled.")
+
         # Use MultiServerMCPClient (official pattern)
         # This creates connections to all servers and queries tools dynamically
-        client = MultiServerMCPClient(mcp_configs)
+        # tool_interceptors will automatically normalize paths before tool execution
+        client = MultiServerMCPClient(
+            mcp_configs,
+            tool_interceptors=tool_interceptors if tool_interceptors else None
+        )
         tools = await client.get_tools()
 
         logger.info(
@@ -369,5 +418,10 @@ class ToolRegistry:
             except Exception as e:
                 logger.warning(f"Failed to add RAG tool to LangChain tools: {e}")
 
+        # Cache tools for future use
+        # Note: Tools are independent of the client - they create new sessions on each call
+        # So we can safely cache them and discard the client
+        self._langchain_tools_cache = (cache_key, tools)
+        
         return tools
 

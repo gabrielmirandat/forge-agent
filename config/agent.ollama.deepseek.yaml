@@ -10,17 +10,16 @@ agent:
   llm:
     provider: ollama
     base_url: http://localhost:11434
-    # Qwen 14b model - Larger Qwen model with excellent tool-calling support
+    # DeepSeek R1 8b model - Reasoning model with tool calling support
     # ✅ Supports tool calling according to Ollama docs
     # Note: Model name may vary - check available models with: ollama list
-    # Possible names: qwen3:14b, qwen2.5:14b, qwen:14b
-    # To download: ollama pull qwen2.5:14b (or check Ollama library for exact name)
-    model: qwen2.5:14b
+    # Available names: deepseek-r1:8b, deepseek-r1-8b
+    # To download: ollama pull deepseek-r1:8b
+    model: deepseek-r1:8b
     # Temperature: 0.0 for deterministic JSON output (recommended for tool calling)
     temperature: 0.0
     max_tokens: 4096
     timeout: 300
-    tool_choice: auto
   
   runtime:
     max_iterations: 50
@@ -46,6 +45,17 @@ agent:
   system_prompt_template: |
     You are a code agent that should help the user manage their repositories.
     All repositories are in the system at {workspace_base}.
+    
+    You have access to various tools for filesystem operations, git operations, and other tasks.
+    Use the tools when you need to perform actual operations. For simple conversational questions, respond directly without using tools.
+    
+    When using tools:
+    - Use natural repository names (e.g., "forge-agent") - the system will automatically resolve paths
+    - Be specific about what you want to do
+    - Use tool chaining when needed to accomplish complex tasks
+    
+    Available tools:
+    {tools}
   
   mcp:
     # MCP servers via Docker
@@ -55,13 +65,21 @@ agent:
     
     # Filesystem MCP server - official Docker MCP server for filesystem operations
     # See: https://hub.docker.com/mcp/server/filesystem/overview
+    # See: https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem
+    # Version 1.0.2+ requires the directory path as argument to set allowed directories
+    # The server automatically restricts access to only the specified directory for security
     # Provides: list_directory, read_file, write_file, create_directory, move_file, search_files, etc.
     filesystem:
       type: docker
       enabled: true
-      image: "mcp/filesystem:latest"
+      # Use specific version for stability (1.0.2)
+      # The :latest tag may point to newer versions with breaking changes
+      image: "mcp/filesystem:1.0.2"
       volumes:
         - "{{workspace.base_path}}:/projects"
+      # The directory path argument sets the allowed directory for security
+      # This is required by the filesystem server v1.0.2+
+      # The server will only allow access to this directory and its subdirectories
       args: ["/projects"]
       timeout: 5000
     
@@ -77,9 +95,8 @@ agent:
       args: []
       timeout: 5000
     
-    # OpenAPI MCP server - OpenAPI/Swagger API operations
+    # OpenAPI MCP server - interact with OpenAPI/Swagger APIs
     # See: https://hub.docker.com/r/mcp/openapi
-    # No token required - works with any OpenAPI spec
     openapi:
       type: docker
       enabled: true
@@ -89,7 +106,7 @@ agent:
       args: []
       timeout: 5000
     
-    # Python Refactoring MCP server - Python code refactoring tools
+    # Python Refactoring MCP server - code refactoring and analysis
     # See: https://hub.docker.com/r/mcp/mcp-python-refactoring
     python_refactoring:
       type: docker
@@ -100,8 +117,9 @@ agent:
       args: []
       timeout: 5000
     
-    # Git MCP server - Git operations (status, commit, diff, etc.)
+    # Git MCP server - Git operations (clone, commit, push, etc.)
     # See: https://hub.docker.com/r/mcp/git
+    # Optional: GITHUB_TOKEN env var for private repos (set in .env file)
     git:
       type: docker
       enabled: true
@@ -113,6 +131,11 @@ agent:
       environment:
         # GITHUB_TOKEN will be read from system environment if set
         GITHUB_TOKEN: "{{env:GITHUB_TOKEN}}"
+        # Configure Git to trust all repositories in /workspace
+        # This prevents "dubious ownership" errors when accessing repos from Docker container
+        GIT_CONFIG_COUNT: "1"
+        GIT_CONFIG_KEY_0: "safe.directory"
+        GIT_CONFIG_VALUE_0: "*"
       # Note: Set GITHUB_TOKEN in .env file if needed for private repos
     
     # GitHub MCP server - GitHub API operations (issues, PRs, code search)

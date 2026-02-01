@@ -536,41 +536,68 @@ class LangChainExecutor:
                     "Install with: pip install langchain-ollama"
                 )
         
-        # Create ChatOllama instance
-        # Note: Docker Manager ensures Ollama container is running before this point
-        # The base_url should point to the Docker Ollama container (default: http://localhost:11434)
-        # Reference: https://docs.ollama.com/capabilities/tool-calling#python
-        # Ollama supports tool calling natively - LangChain's bind_tools() will convert tools to Ollama format
-        # IMPORTANT: Not all Ollama models support tool calling!
-        # Models that support tools: qwen3:8b, devstral, granite4, command-r, etc.
-        # Check: https://ollama.com/search?c=tools
-        # Note: llama3.1 removed - tool calling does not work reliably
-        # Create ChatOllama instance with optimal settings for tool calling
-        # IMPORTANT: temperature=0.0 is recommended for deterministic JSON output in tool calls
-        # Lower temperature = more predictable tool call formatting
-        # num_gpu: Use GPU if available (set to -1 to use all available GPUs, or specific number)
-        # Ollama will automatically detect and use GPU if available
-        num_gpu = getattr(config.llm, 'num_gpu', -1)  # Default to -1 (use all GPUs) if not specified
+        # Try to use pre-initialized model from ModelManager
+        # This allows fast model switching without re-initialization
+        from agent.llm.model_manager import get_model_manager
         
-        self.langchain_llm = ChatOllama(
-            model=config.llm.model,
-            base_url=config.llm.base_url or "http://localhost:11434",
-            temperature=config.llm.temperature,  # Should be 0.0 for best tool calling results
-            num_predict=config.llm.max_tokens,  # Ollama uses num_predict instead of max_tokens
-            num_gpu=num_gpu,  # Use GPU if available (-1 = use all GPUs, 0 = CPU only)
-            timeout=config.llm.timeout,
-            # Note: Ollama tool calling format is handled automatically by LangChain's bind_tools()
-            # The format expected by Ollama API is: {"type": "function", "function": {"name": "...", "arguments": {...}}}
-            # LangChain converts this automatically when using bind_tools()
-            # IMPORTANT: Use langchain_ollama (not langchain-community) for best tool calling support
-        )
+        model_manager = get_model_manager()
         
-        # Log connection info for debugging
-        self.logger.info(
-            f"ChatOllama initialized: model={config.llm.model}, "
-            f"base_url={config.llm.base_url or 'http://localhost:11434'}, "
-            f"num_gpu={num_gpu}"
-        )
+        # Find the model instance that matches current config
+        # We need to match by model name and base_url
+        model_instance = None
+        for provider_id, instance in model_manager.get_all_models().items():
+            if (instance.model_name == config.llm.model and 
+                instance.config.get("base_url") == (config.llm.base_url or "http://localhost:11434")):
+                model_instance = instance
+                break
+        
+        if model_instance and model_instance.langchain_model and model_instance.health_status == "healthy":
+            # Use pre-initialized model
+            self.langchain_llm = model_instance.langchain_model
+            self.logger.info(
+                f"✅ Using pre-initialized model: {config.llm.model} (from ModelManager)"
+            )
+        else:
+            # Fallback: create new ChatOllama instance
+            # Note: Docker Manager ensures Ollama container is running before this point
+            # The base_url should point to the Docker Ollama container (default: http://localhost:11434)
+            # Reference: https://docs.ollama.com/capabilities/tool-calling#python
+            # Ollama supports tool calling natively - LangChain's bind_tools() will convert tools to Ollama format
+            # IMPORTANT: Not all Ollama models support tool calling!
+            # Models that support tools: qwen3:8b, devstral, granite4, command-r, etc.
+            # Check: https://ollama.com/search?c=tools
+            # Note: llama3.1 removed - tool calling does not work reliably
+            # Create ChatOllama instance with optimal settings for tool calling
+            # IMPORTANT: temperature=0.0 is recommended for deterministic JSON output in tool calls
+            # Lower temperature = more predictable tool call formatting
+            # num_gpu: Use GPU if available (set to -1 to use all available GPUs, or specific number)
+            # Ollama will automatically detect and use GPU if available
+            num_gpu = getattr(config.llm, 'num_gpu', -1)  # Default to -1 (use all GPUs) if not specified
+            
+            self.langchain_llm = ChatOllama(
+                model=config.llm.model,
+                base_url=config.llm.base_url or "http://localhost:11434",
+                temperature=config.llm.temperature,  # Should be 0.0 for best tool calling results
+                num_predict=config.llm.max_tokens,  # Ollama uses num_predict instead of max_tokens
+                num_gpu=num_gpu,  # Use GPU if available (-1 = use all GPUs, 0 = CPU only)
+                timeout=config.llm.timeout,
+                # Note: Ollama tool calling format is handled automatically by LangChain's bind_tools()
+                # The format expected by Ollama API is: {"type": "function", "function": {"name": "...", "arguments": {...}}}
+                # LangChain converts this automatically when using bind_tools()
+                # IMPORTANT: Use langchain_ollama (not langchain-community) for best tool calling support
+            )
+            self.logger.info(
+                f"✅ Created new ChatOllama instance: {config.llm.model} (fallback, not in ModelManager)"
+            )
+        
+        # Log connection info for debugging (only if we created a new instance)
+        if not (model_instance and model_instance.langchain_model):
+            num_gpu = getattr(config.llm, 'num_gpu', -1)
+            self.logger.info(
+                f"ChatOllama initialized: model={config.llm.model}, "
+                f"base_url={config.llm.base_url or 'http://localhost:11434'}, "
+                f"num_gpu={num_gpu}"
+            )
         
         # Tools and agent executor are loaded lazily in the async context (run/_ensure_agent_initialized)
         # This avoids trying to patch or manage the event loop (e.g., uvloop) in __init__,
@@ -1162,7 +1189,10 @@ To manipulate the repos, you must use these tools in tool chaining. Show what yo
 
 IMPORTANT: For simple conversational questions, respond directly without using any tools. Only use tools when you need to perform actual operations.
 
-IMPORTANT: When using filesystem tools, always use /projects as the base path (e.g., /projects/forge-agent, not ~/repos/forge-agent or /root/repos/forge-agent).
+When using tools:
+- Use natural repository names (e.g., "forge-agent") - the system will automatically resolve paths
+- Be specific about what you want to do
+- Use tool chaining when needed to accomplish complex tasks
 
 Available tools:
 {tools}"""

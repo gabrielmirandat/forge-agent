@@ -42,121 +42,74 @@ async def get_llm_config(config: AgentConfig = Depends(get_config)) -> Dict[str,
 
 @router.get("/config/llm/providers")
 async def list_llm_providers() -> Dict[str, Any]:
-    """List available LLM providers and models by scanning config directory.
+    """List available LLM providers and models with health status and capabilities.
     
-    Automatically discovers providers from agent.*.yaml files in config/ directory.
-    Only includes models that have been tested and verified to work with tool calling.
+    Uses ModelManager to get pre-initialized models with health checks and capabilities.
     
     Returns:
-        Available providers and models discovered from config files
+        Available providers with health status, capabilities, and model instances
     """
-    from pathlib import Path
-    import yaml
+    from agent.llm.model_manager import get_model_manager
     
-    config_dir = Path("config")
+    manager = get_model_manager()
+    all_models = manager.get_all_models()
+    
     providers = []
     
-    # Models that have been tested and verified to work with MCP tool calling
-    # ✅ = Works correctly, ❌ = Does not work (model limitation)
-    tested_models = {
-        "qwen3:8b": {"status": "✅", "description": "Qwen model with good tool-calling support"},
-        "mistral-small": {"status": "✅", "description": "Mistral model with tool-calling support"},
-        "mistral-small3.2": {"status": "✅", "description": "Mistral model with improved function calling"},
-        # "mistral": {"status": "❌", "description": "Does not call tools (model limitation)"},  # Removed - not working
-    }
-    
-    # Track seen models to avoid duplicates (prefer specific configs over generic ones)
-    seen_models = set()
-    
-    # First pass: collect specific model configs (e.g., agent.ollama.llama31.yaml)
-    specific_configs = []
-    generic_configs = []
-    
-    for config_file in config_dir.glob("agent.*.yaml"):
-        # Skip agent.yaml (default/main config)
-        if config_file.name == "agent.yaml":
-            continue
+    for provider_id, model_instance in all_models.items():
+        # Determine status emoji based on health
+        if model_instance.health_status == "healthy":
+            status_emoji = "✅"
+        elif model_instance.health_status == "unhealthy":
+            status_emoji = "❌"
+        else:
+            status_emoji = "⚠️"
         
-        try:
-            # Extract provider name from filename
-            provider_id = config_file.stem.replace("agent.", "")
-            
-            # Load config to get provider details
-            with open(config_file, "r") as f:
-                config_data = yaml.safe_load(f)
-            
-            if not config_data or "agent" not in config_data:
-                continue
-            
-            llm_config = config_data.get("agent", {}).get("llm", {})
-            provider_name = llm_config.get("provider", provider_id.split(".")[0])
-            model = llm_config.get("model", "unknown")
-            
-            # Categorize: specific (has model in filename) vs generic
-            if len(provider_id.split(".")) > 2:  # e.g., agent.ollama.llama31.yaml
-                specific_configs.append((config_file, provider_id, provider_name, model))
-            else:
-                generic_configs.append((config_file, provider_id, provider_name, model))
-        except Exception as e:
-            logger.warning(f"Failed to parse config file {config_file}: {e}")
-            continue
-    
-    # Process specific configs first (they take priority)
-    for config_file, provider_id, provider_name, model in specific_configs:
-        if model in seen_models:
-            continue  # Skip if we already have this model from a specific config
+        # Extract provider name from ID
+        provider_name = provider_id.split(".")[0] if "." in provider_id else provider_id
         
-        model_info = tested_models.get(model, {})
-        model_status = model_info.get("status", "⚠️")
-        model_description = model_info.get("description", f"{model} model")
+        # Build description with capabilities
+        description_parts = []
+        if model_instance.capabilities:
+            caps = []
+            if model_instance.capabilities.get("tool_calling"):
+                caps.append("tool calling")
+            if model_instance.capabilities.get("image_inputs"):
+                caps.append("image inputs")
+            if model_instance.capabilities.get("reasoning_output"):
+                caps.append("reasoning")
+            if model_instance.capabilities.get("max_input_tokens"):
+                max_tokens = model_instance.capabilities.get("max_input_tokens")
+                caps.append(f"{max_tokens:,} max tokens")
+            
+            if caps:
+                description_parts.append(f"Capabilities: {', '.join(caps)}")
         
-        descriptions = {
-            "ollama": "Local LLM via Docker (recommended for easy setup)",
-        }
+        if model_instance.error:
+            description_parts.append(f"Error: {model_instance.error}")
         
-        provider_description = descriptions.get(provider_name, f"{provider_name.capitalize()} provider")
-        if model_status == "✅":
-            provider_description += f" - {model_description}"
+        description = " | ".join(description_parts) if description_parts else "Local LLM provider"
         
         providers.append({
             "id": provider_id,
-            "name": f"{provider_name.capitalize()} ({model})",
-            "description": provider_description,
-            "config_file": str(config_file),
-            "model": model,
-            "status": model_status,
+            "name": f"{provider_name.capitalize()} ({model_instance.model_name})",
+            "description": description,
+            "config_file": None,  # Not needed when using ModelManager
+            "model": model_instance.model_name,
+            "status": status_emoji,
+            "health_status": model_instance.health_status,
+            "capabilities": model_instance.capabilities,
+            "error": model_instance.error,
+            "selectable": model_instance.health_status == "healthy",
         })
-        seen_models.add(model)
     
-    # Process generic configs (only if model not already seen)
-    for config_file, provider_id, provider_name, model in generic_configs:
-        if model in seen_models:
-            continue  # Skip if we already have this model
-        
-        model_info = tested_models.get(model, {})
-        model_status = model_info.get("status", "⚠️")
-        model_description = model_info.get("description", f"{model} model")
-        
-        descriptions = {
-            "ollama": "Local LLM via Docker (recommended for easy setup)",
-        }
-        
-        provider_description = descriptions.get(provider_name, f"{provider_name.capitalize()} provider")
-        if model_status == "✅":
-            provider_description += f" - {model_description}"
-        
-        providers.append({
-            "id": provider_id,
-            "name": f"{provider_name.capitalize()} ({model})",
-            "description": provider_description,
-            "config_file": str(config_file),
-            "model": model,
-            "status": model_status,
-        })
-        seen_models.add(model)
-    
-    # Sort providers: ✅ first, then others
-    providers.sort(key=lambda p: (p.get("status", "⚠️") != "✅", p.get("name", "")))
+    # Sort providers: healthy first, then others
+    providers.sort(
+        key=lambda p: (
+            p.get("health_status") != "healthy",
+            p.get("name", ""),
+        )
+    )
     
     return {"providers": providers}
 
@@ -246,10 +199,10 @@ async def switch_llm_provider(
     """Switch LLM provider by loading from config file.
     
     This is a convenience endpoint that loads a pre-configured provider
-    from agent.ollama.yaml.
+    from config files like agent.ollama.qwen.yaml, agent.ollama.mistral.yaml, etc.
     
     Args:
-        provider: Provider name ("ollama")
+        provider: Provider name with model identifier (e.g., "ollama.qwen", "ollama.mistral")
         config_file: Optional path to config file (defaults to agent.{provider}.yaml)
         config: Current agent configuration (injected)
     
@@ -274,7 +227,7 @@ async def switch_llm_provider(
     
     # Determine config file path
     if config_file is None:
-        # agent.ollama.yaml, agent.ollama.llama31.yaml, agent.ollama.qwen.yaml, etc.
+        # agent.ollama.qwen.yaml, agent.ollama.mistral.yaml, agent.ollama.deepseek.yaml, etc.
         config_file = f"config/agent.{provider_id}.yaml"
     
     from pathlib import Path
@@ -339,4 +292,82 @@ async def switch_llm_provider(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to switch provider: {str(e)}",
+        ) from e
+
+
+@router.post("/config/llm/restart")
+async def restart_ollama(
+    config: AgentConfig = Depends(get_config),
+) -> Dict[str, Any]:
+    """Restart Ollama Docker container.
+    
+    This endpoint restarts the Ollama container to refresh the model state.
+    Useful when experiencing delays or issues with model responses.
+    
+    Args:
+        config: Current agent configuration (injected)
+    
+    Returns:
+        Status of restart operation
+    """
+    request_id = ascending("message")
+    set_request_id(request_id)
+    
+    if config.llm.provider.lower() != "ollama":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ollama restart is only available when provider is 'ollama'",
+        )
+    
+    try:
+        from agent.runtime.docker_manager import get_docker_manager
+        
+        docker_manager = get_docker_manager()
+        
+        # Extract port from base_url
+        base_url = config.llm.base_url or "http://localhost:11434"
+        try:
+            port = int(base_url.split(":")[-1]) if ":" in base_url else 11434
+        except ValueError:
+            port = 11434
+        
+        # Restart Ollama container
+        success = await docker_manager.restart_ollama(port=port, gpu=True)
+        
+        if success:
+            # Re-initialize model manager after restart
+            from agent.llm.model_manager import get_model_manager, ModelManager
+            from pathlib import Path
+            
+            # Clear existing models and re-initialize
+            manager = get_model_manager()
+            manager.models.clear()
+            manager._initialized = False
+            
+            config_dir = Path("config")
+            await manager.initialize_all_models(config_dir)
+            
+            log_event(
+                logger,
+                "llm.ollama.restarted",
+                port=port,
+                request_id=request_id,
+            )
+            
+            return {
+                "status": "success",
+                "message": "Ollama container restarted successfully",
+                "port": port,
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to restart Ollama container",
+            )
+            
+    except Exception as e:
+        logger.error(f"Failed to restart Ollama: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to restart Ollama: {str(e)}",
         ) from e

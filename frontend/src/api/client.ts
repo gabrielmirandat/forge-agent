@@ -154,3 +154,13 @@ export async function switchLLMProvider(
     method: 'POST',
   });
 }
+
+export async function restartOllama(): Promise<{
+  status: string;
+  message: string;
+  port?: number;
+}> {
+  return fetchJson(`${API_BASE}/config/llm/restart`, {
+    method: 'POST',
+  });
+}

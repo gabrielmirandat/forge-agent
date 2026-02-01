@@ -246,6 +246,53 @@ class DockerManager:
         except Exception as e:
             self.logger.error(f"Error stopping Ollama container: {e}")
 
+    async def restart_ollama(self, port: int = 11434, gpu: bool = True) -> bool:
+        """Restart Ollama Docker container.
+        
+        This method stops the existing Ollama container and starts a new one,
+        effectively refreshing the model state.
+        
+        Args:
+            port: Port to expose Ollama on (default: 11434)
+            gpu: Whether to enable GPU support (default: True)
+            
+        Returns:
+            True if restart successful, False otherwise
+        """
+        try:
+            self.logger.info("Restarting Ollama container...")
+            
+            # Get container name
+            container_name = "forge-agent-ollama"
+            
+            # Try to stop container by name (works even if not in _llm_containers)
+            try:
+                container_id = await self._get_container_id(container_name)
+                if container_id:
+                    self.logger.info(f"Stopping Ollama container {container_id}")
+                    await self._docker_command(["stop", container_id])
+                    # Remove from tracking if present
+                    if "ollama" in self._llm_containers:
+                        del self._llm_containers["ollama"]
+            except Exception as e:
+                self.logger.warning(f"Error stopping Ollama container: {e}")
+            
+            # Wait a moment for container to fully stop
+            await asyncio.sleep(2)
+            
+            # Start Ollama again
+            success = await self.start_ollama(port=port, gpu=gpu)
+            
+            if success:
+                self.logger.info("Ollama container restarted successfully")
+            else:
+                self.logger.error("Failed to restart Ollama container")
+            
+            return success
+        except Exception as e:
+            self.logger.error(f"Error restarting Ollama container: {e}")
+            return False
+
     async def stop_containers(self):
         """Cleanup Docker manager (stop LLM containers, reset state)."""
         if not self._running:

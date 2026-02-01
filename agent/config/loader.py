@@ -117,12 +117,19 @@ class ConfigLoader:
             if default_path:
                 config_path = default_path
             else:
-                # Try agent.ollama.yaml first, then agent.yaml
+                # Try to find first available config file (sorted alphabetically)
+                # Since all models are pre-initialized, we can use any config
                 config_dir = Path("config")
-                if (config_dir / "agent.ollama.yaml").exists():
-                    config_path = "config/agent.ollama.yaml"
-                else:
+                config_files = sorted(config_dir.glob("agent.ollama.*.yaml"))
+                if config_files:
+                    # Use first config file (alphabetically sorted)
+                    config_path = str(config_files[0])
+                elif (config_dir / "agent.yaml").exists():
                     config_path = "config/agent.yaml"
+                else:
+                    raise FileNotFoundError(
+                        "No config file found. Please create a config file in config/ directory."
+                    )
 
         self.config_path = Path(config_path).expanduser().resolve()
 
