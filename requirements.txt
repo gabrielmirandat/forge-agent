@@ -40,6 +40,8 @@ langchain-text-splitters>=0.3.0
 # RAG Dependencies
 chromadb>=0.4.0
 sentence-transformers>=2.2.0
+langchain-huggingface>=1.2.0
+langchain-chroma>=1.1.0
 
 # Retry Logic
 tenacity>=9.0.0

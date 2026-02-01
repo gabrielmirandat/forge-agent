@@ -9,8 +9,9 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import Chroma
+# Use latest packages (langchain-huggingface 1.2.0+, langchain-chroma 1.1.0+)
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -38,7 +39,8 @@ class RAGTool(Tool):
                 - chunk_size: Text chunk size for splitting (default: 800, optimized for Markdown)
                 - chunk_overlap: Overlap between chunks (default: 150)
                 - k: Number of documents to retrieve (default: 8)
-                - score_threshold: Minimum similarity score threshold (default: 0.75)
+                - score_threshold: Minimum similarity score threshold (default: 0.15)
+                    Note: Chroma relevance scores are typically 0.1-0.3 for good matches
                 - retriever_type: Type of retriever to use (default: "similarity_score_threshold")
                     Options: "similarity_score_threshold", "similarity", "mmr", "ensemble"
                 - use_ensemble: Whether to use EnsembleRetriever with BM25 (default: False)
@@ -55,7 +57,9 @@ class RAGTool(Tool):
         self.chunk_size = config.get("chunk_size", 800)
         self.chunk_overlap = config.get("chunk_overlap", 150)
         self.k = config.get("k", 8)
-        self.score_threshold = config.get("score_threshold", 0.75)
+        # Default threshold lowered: Chroma relevance scores are typically 0.1-0.3 for good matches
+        # 0.75 was too high and filtered out all results
+        self.score_threshold = config.get("score_threshold", 0.15)
         self.retriever_type = config.get("retriever_type", "similarity_score_threshold")
         self.use_ensemble = config.get("use_ensemble", False)
         
@@ -87,9 +91,10 @@ class RAGTool(Tool):
             return
         
         # Initialize embeddings
+        # langchain-huggingface 1.2.0+ uses 'model' parameter (not 'model_name')
         if self._embeddings is None:
             self._embeddings = HuggingFaceEmbeddings(
-                model_name=self.embedding_model,
+                model=self.embedding_model,  # Use 'model' (latest API)
                 model_kwargs={"device": "cpu"},
                 encode_kwargs={"normalize_embeddings": True}
             )
@@ -100,17 +105,26 @@ class RAGTool(Tool):
         
         if persist_path.exists() and any(persist_path.iterdir()):
             # Load existing vector store
+            # langchain-chroma 1.1.0+ uses 'embedding_function' parameter
             try:
                 self._vectorstore = Chroma(
                     persist_directory=str(persist_path),
-                    embedding_function=self._embeddings
+                    embedding_function=self._embeddings  # Correct parameter name
                 )
-                # Check if it has documents
-                if self._vectorstore._collection.count() > 0:
-                    # Create retriever from existing vector store
-                    self._create_retriever()
-                    self._initialized = True
-                    return
+                # Check if it has documents by trying a simple search
+                # This is the recommended way instead of accessing _collection directly
+                try:
+                    # Try to get at least one document to verify the store has data
+                    test_results = self._vectorstore.similarity_search("test", k=1)
+                    if test_results:
+                        # Create retriever from existing vector store
+                        self._create_retriever()
+                        self._initialized = True
+                        return
+                except Exception:
+                    # If search fails, the store might be empty or corrupted
+                    # Will create new one below
+                    pass
             except Exception as e:
                 print(f"Warning: Failed to load existing vector store: {e}")
                 # Will create new one below
@@ -342,19 +356,38 @@ class RAGTool(Tool):
                 k = self.k
             
             # Use retriever to get relevant documents
-            # This is the LangChain-recommended approach
-            docs = self._retriever.get_relevant_documents(query)
+            # For similarity_score_threshold, we need to get scores separately
+            # since the retriever doesn't include them in the Document objects
+            if self.retriever_type == "similarity_score_threshold" and self._vectorstore:
+                # Use similarity_search_with_relevance_scores to get scores
+                # This returns (Document, score) tuples with relevance scores [0, 1]
+                docs_with_scores = await self._vectorstore.asimilarity_search_with_relevance_scores(
+                    query, k=k, score_threshold=self.score_threshold
+                )
+                docs = [doc for doc, score in docs_with_scores]
+                scores_map = {id(doc): score for doc, score in docs_with_scores}
+            else:
+                # Use standard retriever interface
+                docs = await self._retriever.ainvoke(query)
+                scores_map = {}
             
             # Format results
             formatted_results = []
             for doc in docs:
-                # For retrievers, we may not have scores directly
-                # Try to get score if available (similarity_score_threshold returns it)
-                score = getattr(doc, "score", None)
+                # Get score from map if available (similarity_score_threshold)
+                score = scores_map.get(id(doc))
+                
+                # Try to extract score from document if not in map
                 if score is None:
-                    # For ensemble or MMR, we don't have direct scores
-                    # Could compute similarity if needed, but it's expensive
-                    score = None
+                    if hasattr(doc, "score"):
+                        score = doc.score
+                    elif isinstance(doc.metadata, dict) and "score" in doc.metadata:
+                        score = doc.metadata.get("score")
+                    elif isinstance(doc.metadata, dict) and "relevance_score" in doc.metadata:
+                        score = doc.metadata.get("relevance_score")
+                
+                # For ensemble or MMR retrievers, scores may not be available
+                # This is expected and not an error
                 
                 formatted_results.append({
                     "content": doc.page_content,
