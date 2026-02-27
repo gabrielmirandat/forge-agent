@@ -55,6 +55,7 @@ workspace/
 .cache/
 *.db
 *.sqlite
+.chroma_db/
 
 # Phase-specific outputs and test artifacts
 phase*/outputs/
