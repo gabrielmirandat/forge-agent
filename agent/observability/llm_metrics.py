@@ -29,7 +29,8 @@ class LLMUsageMetrics:
             "completion_tokens": 0,
             "calls": 0,
             "last_used_at": None,
-            "response_times": [],  # List of response times in seconds
+            "response_times": [],   # List of response times in seconds
+            "tokens_per_second": [], # List of tokens/sec from Ollama eval_duration
         }))
 
     def record_usage(
@@ -40,6 +41,7 @@ class LLMUsageMetrics:
         completion_tokens: int = 0,
         total_tokens: Optional[int] = None,
         response_time: Optional[float] = None,
+        tokens_per_second: Optional[float] = None,
     ):
         """Record LLM usage for a session and model.
         
@@ -67,9 +69,14 @@ class LLMUsageMetrics:
         # Track response time if provided
         if response_time is not None and response_time > 0:
             metrics["response_times"].append(response_time)
-            # Keep only last 100 response times to avoid memory issues
             if len(metrics["response_times"]) > 100:
                 metrics["response_times"] = metrics["response_times"][-100:]
+
+        # Track tokens/sec if provided (from Ollama eval_duration)
+        if tokens_per_second is not None and tokens_per_second > 0:
+            metrics["tokens_per_second"].append(tokens_per_second)
+            if len(metrics["tokens_per_second"]) > 100:
+                metrics["tokens_per_second"] = metrics["tokens_per_second"][-100:]
 
     def get_session_metrics(self, session_id: str) -> Dict:
         """Get metrics for a specific session.
@@ -164,6 +171,7 @@ class LLMUsageMetrics:
             "total_calls": 0,
             "active_sessions": 0,
             "response_times": [],
+            "tokens_per_second": [],
             "last_used_at": None,
         })
         
@@ -190,6 +198,8 @@ class LLMUsageMetrics:
                     
                     if m.get("response_times"):
                         model_metrics[model]["response_times"].extend(m["response_times"])
+                    if m.get("tokens_per_second"):
+                        model_metrics[model]["tokens_per_second"].extend(m["tokens_per_second"])
                     
                     # Track last used timestamp per model
                     if m.get("last_used_at"):
@@ -211,12 +221,22 @@ class LLMUsageMetrics:
             avg_response_time = None
             if metrics["response_times"]:
                 avg_response_time = round(sum(metrics["response_times"]) / len(metrics["response_times"]), 3)
-            
+
+            avg_tokens_per_second = None
+            last_tokens_per_second = None
+            if metrics["tokens_per_second"]:
+                avg_tokens_per_second = round(
+                    sum(metrics["tokens_per_second"]) / len(metrics["tokens_per_second"]), 1
+                )
+                last_tokens_per_second = metrics["tokens_per_second"][-1]
+
             per_model_metrics[model] = {
                 "total_tokens": metrics["total_tokens"],
                 "total_calls": metrics["total_calls"],
                 "active_sessions": len(model_sessions[model]),
                 "avg_response_time": avg_response_time,
+                "avg_tokens_per_second": avg_tokens_per_second,
+                "last_tokens_per_second": last_tokens_per_second,
                 "last_used_at": metrics["last_used_at"],
             }
         

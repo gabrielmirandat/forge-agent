@@ -1,0 +1,67 @@
+# Tool palette for the Quick Actions UI
+#
+# Each group maps to an MCP server.
+# Each operation defines a template pre-filled into the chat input.
+# {filesystem_root} and {workspace_root} are resolved at runtime from MCP config.
+#
+# Template format: "call <tool> with <arg>=<prefix>/" — user appends the repo/path.
+# Using the explicit "call <tool>" format ensures the model knows which tool to invoke.
+# The "/" in the resolved template also prevents backend hint injection from firing
+# (hints have requires_no_path: true).
+
+palette:
+  - id: filesystem
+    label: Filesystem
+    icon: "📁"
+    operations:
+      - id: list
+        label: List directory
+        template: "call list_directory with path={filesystem_root}/"
+      - id: read
+        label: Read file
+        template: "call read_file with path={filesystem_root}/"
+      - id: search
+        label: Search files
+        template: "call search_files with path={filesystem_root}/ pattern="
+      - id: write
+        label: Write file
+        template: "call write_file with path={filesystem_root}/"
+
+  - id: git
+    label: Git
+    icon: "🔀"
+    operations:
+      - id: status
+        label: Git status
+        template: "call git_status with repo_path={workspace_root}/"
+      - id: log
+        label: Git log
+        template: "call git_log with repo_path={workspace_root}/"
+      - id: diff
+        label: Git diff
+        template: "call git_diff with repo_path={workspace_root}/"
+      - id: clone
+        label: Clone repo
+        template: "call git_clone with url="
+
+  - id: playwright
+    label: Browser
+    icon: "🌐"
+    operations:
+      - id: navigate
+        label: Open URL
+        template: "call playwright_navigate with url="
+      - id: screenshot
+        label: Screenshot
+        template: "call playwright_screenshot of "
+      - id: scrape
+        label: Get page content
+        template: "get the content of "
+
+  - id: fetch
+    label: Fetch
+    icon: "🔍"
+    operations:
+      - id: get
+        label: Fetch URL
+        template: "call fetch with url="

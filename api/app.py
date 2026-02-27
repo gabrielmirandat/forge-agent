@@ -76,13 +76,17 @@ async def startup_event():
             print(f"❌ Failed to ensure Docker image for MCP server: {mcp_name}")
     
     # Initialize model manager - pre-initialize all models with health checks
-    from agent.llm.model_manager import initialize_model_manager
+    from agent.llm.model_manager import initialize_model_manager, discover_and_register_models
     from pathlib import Path
-    
+
     config_dir = Path("config")
     print("🔄 Pre-initializing all available models...")
     model_manager = await initialize_model_manager(config_dir)
-    
+
+    # Also discover models via Ollama API (catches models not in YAML files)
+    ollama_url = config.llm.base_url or "http://localhost:11434"
+    await discover_and_register_models(ollama_url)
+
     # Log model initialization results
     all_models = model_manager.get_all_models()
     healthy_models = model_manager.get_healthy_models()
@@ -100,6 +104,26 @@ async def startup_event():
                 caps.append("reasoning")
             if caps:
                 print(f"      Capabilities: {', '.join(caps)}")
+
+    # Resolve router tiers against locally available models
+    from agent.routing.router import get_router
+    from agent.llm.discovery import resolve_tier_models
+
+    rtr = get_router()
+    if rtr.enabled:
+        print("🔀 Resolving LLM router tiers...")
+        try:
+            tier_results = await resolve_tier_models(rtr.config, ollama_url)
+            for tier_name, info in tier_results.items():
+                if info["selected_model"]:
+                    rtr.update_tier_model(tier_name, info["selected_model"])
+                    print(f"   ✅ Tier '{tier_name}': {info['selected_model']}")
+                else:
+                    preferred = info.get("preferred_models", [])
+                    pull_cmd = f"ollama pull {preferred[0]}" if preferred else "N/A"
+                    print(f"   ⚠️  Tier '{tier_name}': no model available — {pull_cmd}")
+        except Exception as e:
+            print(f"   ⚠️  Router tier resolution failed: {e}")
     
     # Initialize tool registry
     await initialize_tool_registry(config)

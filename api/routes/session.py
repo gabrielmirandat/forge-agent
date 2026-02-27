@@ -1,5 +1,6 @@
 """Session/chat API routes."""
 
+import asyncio
 import time
 from typing import Dict
 from agent.id import ascending
@@ -171,6 +172,10 @@ async def delete_session(
 
     try:
         await storage.delete_session(session_id)
+        # Clean up the per-session executor so memory is freed
+        from agent.runtime.langchain_executor import clear_session_executor
+        clear_session_executor(session_id)
+
         duration = time.time() - start_time
         api_requests_total.labels(endpoint="/sessions/{session_id}", method="DELETE", status="200").inc()
         api_request_duration_seconds.labels(endpoint="/sessions/{session_id}").observe(duration)
@@ -319,24 +324,50 @@ async def _process_message_background(
         # Step 3: Use LangChainExecutor - LLM uses tools via LangChain agents
         config = get_config()
         tool_registry = get_tool_registry()
-        
-        from agent.runtime.langchain_executor import get_shared_executor
-        
+
+        from agent.routing.router import get_router
+        from agent.runtime.langchain_executor import get_session_executor
+
         # Publish execution started event (only if session still exists)
         await publish_if_session_exists(
             EventType.EXECUTION_STARTED,
             {"session_id": session_id},
             storage,
         )
-        
-        # Get shared executor instance (singleton) - reduces resource usage
-        # The executor is shared across all sessions, with session_id passed to run()
-        executor = await get_shared_executor(
-            config=config,
-            tool_registry=tool_registry,
-            storage=storage,  # Pass storage to enable session existence checks
+
+        # Route each message independently.
+        # get_session_executor() reuses the existing executor when the model is
+        # the same, or creates a new one when the tier changes (e.g. greeting →
+        # nano, then coding task → smart). History in DB is always preserved.
+        decision = get_router().route(request.content)
+        session_config = config.model_copy(deep=True)
+        if decision.model != session_config.llm.model:
+            session_config.llm.model = decision.model
+        log_event(
+            logger,
+            "router.decision",
+            session_id=session_id,
+            tier=decision.tier,
+            model=decision.model,
+            reason=decision.reason,
         )
-        
+        await publish(
+            EventType.ROUTER_DECISION,
+            {
+                "session_id": session_id,
+                "tier": decision.tier,
+                "model": decision.model,
+                "reason": decision.reason,
+            },
+        )
+
+        executor = await get_session_executor(
+            session_id=session_id,
+            config=session_config,
+            tool_registry=tool_registry,
+            storage=storage,
+        )
+
         # Run LangChain agent execution with session_id
         result = await executor.run(
             user_message=request.content,
@@ -365,12 +396,16 @@ async def _process_message_background(
             return
         
         # Publish execution completed event (only if session still exists)
+        # Include router decision info so clients can detect the tier even if
+        # they missed the earlier router.decision SSE event (race condition).
         await publish_if_session_exists(
             EventType.EXECUTION_COMPLETED,
             {
                 "session_id": session_id,
                 "success": result.get("success", False),
                 "iterations": result.get("iterations", 0),
+                "tier": decision.tier,
+                "model": decision.model,
             },
             storage,
         )
@@ -422,6 +457,8 @@ async def _process_message_background(
             session_id=session_id,
             duration_ms=duration * 1000,
         )
+    except asyncio.CancelledError:
+        raise
     except NotFoundError as e:
         logger.error(f"[{request_id}] Session not found: {session_id}")
         await publish(EventType.EXECUTION_FAILED, {
@@ -440,7 +477,6 @@ async def _process_message_background(
             "session_id": session_id,
             "error": str(e),
         })
-        # Re-raise to see in logs
         raise
 
 

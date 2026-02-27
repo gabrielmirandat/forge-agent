@@ -426,48 +426,65 @@ def create_rag_langchain_tool(rag_tool: RAGTool) -> Any:
     Returns:
         LangChain tool categorized as "RAG" (different from browser search tools)
     """
-    def rag_documentation_search(query: str, k: int = 4) -> str:
-        """Search and retrieve relevant documentation from the codebase.
-        
-        Use this tool when you need to find information about LangChain, tools,
-        agents, or other topics covered in the documentation.
-        
-        Args:
-            query: Search query describing what information you're looking for
-            k: Number of document chunks to retrieve (default: 4)
-        
-        Returns:
-            JSON string with search results containing relevant documentation chunks
-        """
-        import asyncio
+    def _format_rag_result(result: Any) -> str:
         import json
-        
-        # Execute the tool
-        result = asyncio.run(
-            rag_tool.execute(
-                operation="search",
-                arguments={"query": query, "k": k}
-            )
-        )
-        
         if not result.success:
             return json.dumps({"error": result.error})
-        
-        # Format output for readability
         output = result.output
         formatted = f"Found {output['count']} relevant document(s) for query: '{output['query']}'\n\n"
-        
         for i, res in enumerate(output['results'], 1):
             score_str = f"{res['score']:.4f}" if res['score'] is not None else "N/A"
             formatted += f"--- Result {i} (score: {score_str}) ---\n"
             formatted += f"Source: {res['metadata'].get('filename', 'unknown')}\n"
             formatted += f"Content:\n{res['content']}\n\n"
-        
         return formatted
-    
-    # Create tool with RAG category using StructuredTool for explicit category control
+
+    async def rag_documentation_search_async(query: str, k: int = 4) -> str:
+        """Search and retrieve relevant documentation from the codebase."""
+        result = await rag_tool.execute(
+            operation="search",
+            arguments={"query": query, "k": k}
+        )
+        return _format_rag_result(result)
+
+    def rag_documentation_search(query: str, k: int = 4) -> str:
+        """Search and retrieve relevant documentation from the codebase.
+
+        Use this tool when you need to find information about LangChain, tools,
+        agents, or other topics covered in the documentation.
+
+        Args:
+            query: Search query describing what information you're looking for
+            k: Number of document chunks to retrieve (default: 4)
+
+        Returns:
+            Formatted string with relevant documentation chunks
+        """
+        import asyncio
+        import json
+
+        # Prefer running in an existing event loop (avoids asyncio.run() conflict)
+        try:
+            loop = asyncio.get_running_loop()
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(
+                    asyncio.run,
+                    rag_tool.execute(operation="search", arguments={"query": query, "k": k}),
+                )
+                result = future.result()
+        except RuntimeError:
+            result = asyncio.run(
+                rag_tool.execute(operation="search", arguments={"query": query, "k": k})
+            )
+        return _format_rag_result(result)
+
+    # Create tool with RAG category using StructuredTool for explicit category control.
+    # Provide both sync (func) and async (coroutine) so LangChain always picks the
+    # async path when running inside an asyncio event loop (avoids asyncio.run() conflict).
     return StructuredTool.from_function(
         func=rag_documentation_search,
+        coroutine=rag_documentation_search_async,
         name="rag_documentation_search",
         description=(
             "Search and retrieve relevant documentation from the codebase documentation. "

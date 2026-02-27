@@ -250,7 +250,7 @@ import {
   listSessions,
   sendMessage,
 } from '../api/client';
-import { LLMProviderSelector } from '../components/LLMProviderSelector';
+import { restartOllama } from '../api/client';
 import { ObservabilityPanel } from '../components/ObservabilityPanel';
 import { useEventStream, type Event } from '../hooks/useEventStream';
 import type {
@@ -277,11 +277,21 @@ export function ChatPage() {
   const [streamingContent, setStreamingContent] = useState<string>(''); // Content being streamed in real-time
   const [intermediateChunks, setIntermediateChunks] = useState<Array<{type: string; content: string; timestamp: number}>>([]); // Intermediate chunks (reasoning, tool calls, etc)
   const [waitingForResponse, setWaitingForResponse] = useState(false); // Track if we're waiting for first chunk
+  // Execution log persisted after session.message.added — shown alongside the last assistant message
+  const [currentTier, setCurrentTier] = useState<{ tier: string; model: string } | null>(null);
+  const [lastExecutionLog, setLastExecutionLog] = useState<{
+    preToolText: string;
+    toolCalls: Array<{name: string; input: string; error?: string}>;
+  } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(false); // Start with auto-scroll disabled
   const loadingSessionRef = useRef<string | null>(null); // Track which session is currently loading
+  // Accumulate tool calls across all LLM cycles for the current user request
+  const requestToolCallsRef = useRef<Array<{name: string; input: string; error?: string}>>([]);
+  // Most recent streaming text snapshot (saved before clearing in llm.stream.end)
+  const preToolTextRef = useRef<string>('');
   const loadSessionTimeoutRef = useRef<number | null>(null); // Debounce timer for loadSession
   const failedSessionsRef = useRef<Set<string>>(new Set()); // Track sessions that failed (404)
   const currentSessionRef = useRef<SessionResponse | null>(null); // Ref to track current session for closures
@@ -441,10 +451,22 @@ export function ChatPage() {
     
     switch (event.type) {
       case 'session.message.added':
-        // User message was added - update state locally
-        // For user messages, we already have them from sendMessage
-        // For assistant messages, they come via llm.stream.token
-        // No need to reload from backend
+        // Reload session only when assistant message is saved to DB (guaranteed correct timing)
+        if (event.properties?.role === 'assistant') {
+          const addedSessionId = event.properties?.session_id;
+          if (addedSessionId && currentSession && currentSession.session_id === addedSessionId) {
+            // Persist execution context so it can be shown alongside the final message
+            if (requestToolCallsRef.current.length > 0 || preToolTextRef.current) {
+              setLastExecutionLog({
+                preToolText: preToolTextRef.current,
+                toolCalls: [...requestToolCallsRef.current],
+              });
+            }
+            loadSession(addedSessionId, true, true).catch((err) => {
+              console.error('Failed to reload session after message saved:', err);
+            });
+          }
+        }
         break;
       
       case 'session.updated':
@@ -468,6 +490,13 @@ export function ChatPage() {
         // Error information should be in event.properties
         if (event.properties?.error) {
           setError(event.properties.error);
+        }
+        break;
+
+      case 'router.decision':
+        // Router selected a tier/model for this session
+        if (event.properties?.tier && event.properties?.model) {
+          setCurrentTier({ tier: event.properties.tier, model: event.properties.model });
         }
         break;
       
@@ -600,6 +629,10 @@ export function ChatPage() {
           ]);
         }
         
+        // Save text snapshot before clearing (used to display pre-tool reasoning with final message)
+        if (streamingContent) {
+          preToolTextRef.current = streamingContent;
+        }
         // Clear streaming content and loading indicator
         setStreamingContent('');
         setWaitingForResponse(false);
@@ -608,19 +641,9 @@ export function ChatPage() {
           pendingStreamingClearRef.current = null;
         }
         
-        // Reload full session from backend to ensure we have the complete conversation
-        // Add delay to give backend time to save everything to disk
-        const eventSessionId = event.properties?.session_id;
-        if (eventSessionId && currentSession && currentSession.session_id === eventSessionId) {
-          // Wait a bit for backend to finish saving to disk before reloading
-          // This ensures we get the complete conversation with all messages saved
-          setTimeout(() => {
-            // Reload session from backend with scrollToBottom=true to show the end
-            loadSession(eventSessionId, true, true).catch((err) => {
-              console.error('Failed to reload session after LLM completion:', err);
-            });
-          }, 500); // 500ms delay to ensure backend has saved everything
-        }
+        // Do NOT reload here - llm.stream.end fires for every LLM call (tool decisions too),
+        // not just the final one. Reload is handled by session.message.added which fires
+        // only after the assistant message is persisted to DB.
         break;
       
       case 'tool.decision':
@@ -633,21 +656,35 @@ export function ChatPage() {
         }
         break;
       
-      case 'tool.called':
-      case 'tool.stream.start':
-        // Tool is being called - store as intermediate chunk
+      case 'tool.called': {
+        // Canonical event for a tool invocation — write to both live display and persistent log
         const toolName = event.properties.tool || 'unknown';
         const toolArgs = event.properties.arguments || event.properties.input || {};
+        const toolArgsStr = JSON.stringify(toolArgs);
         console.log(`🔧 Calling tool: ${toolName}`, toolArgs);
+        // Deduplicate: tool.stream.start fires simultaneously with the same data
+        if (!requestToolCallsRef.current.some((tc) => tc.name === toolName && tc.input === toolArgsStr)) {
+          requestToolCallsRef.current.push({ name: toolName, input: toolArgsStr });
+        }
         setIntermediateChunks((prev) => [
           ...prev,
-          { 
-            type: 'tool_call', 
-            content: `${toolName}(${JSON.stringify(toolArgs)})`, 
-            timestamp: Date.now() 
-          }
+          { type: 'tool_call', content: `${toolName}(${toolArgsStr})`, timestamp: Date.now() }
         ]);
         break;
+      }
+
+      case 'tool.stream.start': {
+        // Fires simultaneously with tool.called — only update live display to avoid double entries in the log
+        const toolName = event.properties.tool || 'unknown';
+        const toolArgs = event.properties.input || {};
+        const toolArgsStr = JSON.stringify(toolArgs);
+        console.log(`🔧 Tool stream start: ${toolName}`, toolArgs);
+        setIntermediateChunks((prev) => {
+          if (prev.some((c) => c.type === 'tool_call' && c.content.startsWith(`${toolName}(`))) return prev;
+          return [...prev, { type: 'tool_call', content: `${toolName}(${toolArgsStr})`, timestamp: Date.now() }];
+        });
+        break;
+      }
       
       case 'tool.stream.end':
         // Tool execution completed
@@ -655,10 +692,21 @@ export function ChatPage() {
         console.log(`   Output: ${event.properties.output?.substring(0, 200)}...`);
         break;
       
-      case 'tool.stream.error':
-        // Tool execution error
-        console.log(`❌ Tool error: ${event.properties.tool} - ${event.properties.error}`);
+      case 'tool.stream.error': {
+        // Tool execution error - record it and show as intermediate chunk
+        const errToolName = event.properties.tool || 'unknown';
+        const errMsg = event.properties.error || 'unknown error';
+        console.log(`❌ Tool error: ${errToolName} - ${errMsg}`);
+        // Annotate the last tool call in the accumulator with the error
+        if (requestToolCallsRef.current.length > 0) {
+          requestToolCallsRef.current[requestToolCallsRef.current.length - 1].error = errMsg;
+        }
+        setIntermediateChunks((prev) => [
+          ...prev,
+          { type: 'tool_error', content: `${errToolName}: ${errMsg}`, timestamp: Date.now() }
+        ]);
         break;
+      }
       
       case 'chain.stream.start':
         // Chain execution started
@@ -694,6 +742,7 @@ export function ChatPage() {
     // Clear streaming state
     setStreamingContent('');
     setIntermediateChunks([]);
+    setCurrentTier(null);
     setError(null);
     
     // Create temporary empty session (will be created when user sends first message)
@@ -736,6 +785,10 @@ export function ChatPage() {
     setStreamingContent(''); // Clear any previous streaming content
     setSending(true);
     setError(null);
+    // Reset execution log for new request
+    requestToolCallsRef.current = [];
+    preToolTextRef.current = '';
+    setLastExecutionLog(null);
 
     // Step 1: Create session if it doesn't exist (first message)
     let actualSessionId = currentSession?.session_id || '';
@@ -890,6 +943,9 @@ export function ChatPage() {
       failedSessionsRef.current.clear();
     }
     
+    // Reset tier badge when switching sessions
+    setCurrentTier(null);
+
     if (sessionId) {
       loadSession(sessionId, false, true); // Use loading state for initial load, scroll to bottom
     } else {
@@ -915,6 +971,7 @@ export function ChatPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]); // Only depend on sessionId - loadSession is stable and doesn't need to be in deps
+
 
   // Handle Enter key
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1163,15 +1220,34 @@ export function ChatPage() {
           ))}
         </div>
 
-        {/* LLM Provider Selector - at the bottom */}
+        {/* Sidebar footer: Ollama restart */}
         <div
           style={{
-            borderTop: '1px solid #444',
-            padding: '1rem',
+            borderTop: '1px solid #333',
+            padding: '0.5rem 1rem',
             background: '#202123',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
           }}
         >
-          <LLMProviderSelector />
+          <span style={{ fontSize: '0.7rem', color: '#555' }}>Ollama</span>
+          <button
+            onClick={async () => {
+              try { await restartOllama(); } catch {}
+            }}
+            title="Reiniciar Ollama"
+            style={{
+              background: 'transparent', border: 'none',
+              color: '#555', cursor: 'pointer',
+              fontSize: '0.875rem', padding: '0.25rem',
+              borderRadius: '4px',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = '#19c37d'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = '#555'; }}
+          >
+            ↻
+          </button>
         </div>
       </div>
 
@@ -1233,59 +1309,108 @@ export function ChatPage() {
                 width: '100%',
               }}
             >
-              {currentSession.messages.map((message) => (
-                <div
-                  key={message.message_id}
-                  style={{
-                    marginBottom: '1rem',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '0.25rem',
-                  }}
-                >
+              {currentSession.messages.map((message, msgIndex) => {
+                const isLastAssistant =
+                  message.role === 'assistant' &&
+                  msgIndex === currentSession.messages.length - 1;
+                const execLog = isLastAssistant ? lastExecutionLog : null;
+                return (
                   <div
+                    key={message.message_id}
                     style={{
-                      fontWeight: '600',
-                      fontSize: '0.875rem',
-                      color: message.role === 'user' ? '#19c37d' : '#8b9dc3',
+                      marginBottom: '1rem',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.25rem',
                     }}
                   >
-                    {message.role === 'user' ? 'You' : 'Assistant'}
+                    <div
+                      style={{
+                        fontWeight: '600',
+                        fontSize: '0.875rem',
+                        color: message.role === 'user' ? '#19c37d' : '#8b9dc3',
+                      }}
+                    >
+                      {message.role === 'user' ? 'You' : 'Assistant'}
+                    </div>
+                    {/* Show pre-tool text if different from the final message content */}
+                    {execLog?.preToolText && execLog.preToolText !== message.content && (
+                      <div style={{ whiteSpace: 'pre-wrap', lineHeight: '1.5', color: '#aaa' }}>
+                        <MessageContent content={execLog.preToolText} textColor="#aaa" />
+                      </div>
+                    )}
+                    {/* Show tool calls and errors from the execution */}
+                    {execLog && execLog.toolCalls.length > 0 && (
+                      <div
+                        style={{
+                          marginTop: '0.25rem',
+                          paddingTop: '0.25rem',
+                          borderTop: '1px solid #3a3b47',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '0.2rem',
+                        }}
+                      >
+                        {execLog.toolCalls.map((tc, i) => (
+                          <div
+                            key={i}
+                            style={{
+                              fontSize: '0.75rem',
+                              fontFamily: 'monospace',
+                              color: tc.error ? '#e05c5c' : '#888',
+                              whiteSpace: 'pre-wrap',
+                              lineHeight: '1.4',
+                            }}
+                          >
+                            {tc.error ? (
+                              <span><span style={{ color: '#e05c5c' }}>❌ </span>{tc.name}({tc.input}) → {tc.error}</span>
+                            ) : (
+                              <span><span style={{ color: '#666' }}>🔧 </span>{tc.name}({tc.input})</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div style={{ whiteSpace: 'pre-wrap', lineHeight: '1.5' }}>
+                      <MessageContent
+                        content={message.content}
+                        textColor={message.role === 'user' ? '#d4d4d4' : '#ececf1'}
+                      />
+                    </div>
                   </div>
-                  <div
-                    style={{
-                      whiteSpace: 'pre-wrap',
-                      lineHeight: '1.5',
-                    }}
-                  >
-                    <MessageContent 
-                      content={message.content} 
-                      textColor={message.role === 'user' ? '#d4d4d4' : '#ececf1'}
-                    />
-                  </div>
-                  {/* Removed plan_result display - no longer used with direct tool calling */}
-                </div>
-              ))}
+                );
+              })}
               {/* Show loading indicator while waiting for first chunk */}
               {waitingForResponse && !streamingContent && (
                 <div
                   style={{
                     marginBottom: '1rem',
                     display: 'flex',
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    width: '100%',
+                    flexDirection: 'column',
+                    gap: '0.375rem',
                   }}
                 >
-                  <div
-                    style={{
-                      width: '8px',
-                      height: '8px',
-                      borderRadius: '50%',
-                      background: '#19c37d',
-                      animation: 'pulse 1.5s ease-in-out infinite',
-                    }}
-                  />
+                  {/* Model label row */}
+                  <div style={{ fontWeight: '600', fontSize: '0.875rem', color: '#8b9dc3' }}>
+                    Assistant
+                  </div>
+                  {/* Thinking indicator */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <div
+                      style={{
+                        width: '7px', height: '7px',
+                        borderRadius: '50%',
+                        background: '#19c37d',
+                        animation: 'pulse 1.5s ease-in-out infinite',
+                        flexShrink: 0,
+                      }}
+                    />
+                    <span style={{ fontSize: '0.8rem', color: '#666', fontFamily: 'monospace' }}>
+                      {currentTier
+                        ? `${currentTier.model} [${currentTier.tier}] thinking...`
+                        : 'thinking...'}
+                    </span>
+                  </div>
                 </div>
               )}
               {/* Show streaming content in real-time while streaming */}
@@ -1305,9 +1430,15 @@ export function ChatPage() {
                       fontWeight: '600',
                       fontSize: '0.875rem',
                       color: '#8b9dc3',
+                      display: 'flex', alignItems: 'center', gap: '0.5rem',
                     }}
                   >
                     Assistant
+                    {currentTier && (
+                      <span style={{ fontSize: '0.7rem', fontWeight: '400', color: '#555', fontFamily: 'monospace' }}>
+                        {currentTier.model} [{currentTier.tier}]
+                      </span>
+                    )}
                   </div>
                   <div
                     style={{
@@ -1352,6 +1483,12 @@ export function ChatPage() {
                               {chunk.content}
                             </span>
                           )}
+                          {chunk.type === 'tool_error' && (
+                            <span>
+                              <span style={{ color: '#e05c5c' }}>❌ Error: </span>
+                              {chunk.content}
+                            </span>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -1371,6 +1508,21 @@ export function ChatPage() {
                 width: '100%',
               }}
             >
+              {/* Tier badge — shown after router decides */}
+              {currentTier && (
+                <div
+                  title={`Tier: ${currentTier.tier} | Modelo: ${currentTier.model}`}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '0.25rem',
+                    fontSize: '0.7rem', color: '#888', marginBottom: '0.5rem',
+                  }}
+                >
+                  <span>{currentTier.tier === 'nano' ? '💬' : currentTier.tier === 'fast' ? '⚡' : currentTier.tier === 'smart' ? '🧠' : '🚀'}</span>
+                  <span style={{ color: '#aaa' }}>{currentTier.tier}</span>
+                  <span style={{ color: '#555' }}>·</span>
+                  <span style={{ fontFamily: 'monospace', fontSize: '0.65rem', color: '#666' }}>{currentTier.model}</span>
+                </div>
+              )}
               <div
                 style={{
                   display: 'flex',

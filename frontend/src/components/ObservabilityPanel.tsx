@@ -58,6 +58,8 @@ interface ObservabilityData {
         total_calls: number;
         active_sessions: number;
         avg_response_time?: number | null;
+        avg_tokens_per_second?: number | null;
+        last_tokens_per_second?: number | null;
         last_used_at?: number | null;
       }>;
     };
@@ -454,7 +456,7 @@ export function ObservabilityPanel() {
                     <th style={{ textAlign: 'left', padding: '0.25rem 0.5rem', color: '#888', fontWeight: '600' }}>Model</th>
                     <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#888', fontWeight: '600' }}>Tokens</th>
                     <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#888', fontWeight: '600' }}>Calls</th>
-                    <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#888', fontWeight: '600' }}>Sessions</th>
+                    <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#19c37d', fontWeight: '600' }}>tok/s</th>
                     <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#888', fontWeight: '600' }}>Last Used</th>
                   </tr>
                 </thead>
@@ -462,14 +464,14 @@ export function ObservabilityPanel() {
                   {Object.entries(globalLLM.per_model).map(([model, metrics]) => {
                     const formatLastUsed = (timestamp?: number | null): string => {
                       if (!timestamp) return 'Never';
-                      const now = Date.now() / 1000; // Current time in seconds
+                      const now = Date.now() / 1000;
                       const diff = now - timestamp;
                       if (diff < 60) return `${Math.floor(diff)}s ago`;
                       if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
                       if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
                       return `${Math.floor(diff / 86400)}d ago`;
                     };
-                    
+                    const tps = metrics.last_tokens_per_second ?? metrics.avg_tokens_per_second;
                     return (
                       <tr key={model} style={{ borderBottom: '1px solid #2a2a2a' }}>
                         <td style={{ padding: '0.25rem 0.5rem', color: '#aaa', wordBreak: 'break-word' }}>{model}</td>
@@ -479,8 +481,8 @@ export function ObservabilityPanel() {
                         <td style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#aaa' }}>
                           {metrics.total_calls}
                         </td>
-                        <td style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#aaa' }}>
-                          {metrics.active_sessions}
+                        <td style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: tps ? '#19c37d' : '#555', fontWeight: tps ? 600 : 400 }}>
+                          {tps != null ? `${tps}` : '—'}
                         </td>
                         <td style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#aaa', fontSize: '0.7rem' }}>
                           {formatLastUsed(metrics.last_used_at)}
@@ -499,7 +501,7 @@ export function ObservabilityPanel() {
                     <th style={{ textAlign: 'left', padding: '0.25rem 0.5rem', color: '#888', fontWeight: '600' }}>Model</th>
                     <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#888', fontWeight: '600' }}>Tokens</th>
                     <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#888', fontWeight: '600' }}>Calls</th>
-                    <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#888', fontWeight: '600' }}>Sessions</th>
+                    <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#19c37d', fontWeight: '600' }}>tok/s</th>
                     <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem', color: '#888', fontWeight: '600' }}>Last Used</th>
                   </tr>
                 </thead>

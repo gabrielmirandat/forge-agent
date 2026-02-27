@@ -418,6 +418,15 @@ class ToolRegistry:
             except Exception as e:
                 logger.warning(f"Failed to add RAG tool to LangChain tools: {e}")
 
+        # Add delete_directory native tool (filesystem MCP has no delete capability)
+        try:
+            from agent.tools.shell_tool import create_delete_directory_tool
+            delete_tool = create_delete_directory_tool(workspace_base=str(workspace_base))
+            tools.append(delete_tool)
+            logger.info("Added delete_directory native tool to LangChain tools")
+        except Exception as e:
+            logger.warning(f"Failed to add delete_directory tool: {e}")
+
         # Cache tools for future use
         # Note: Tools are independent of the client - they create new sessions on each call
         # So we can safely cache them and discard the client

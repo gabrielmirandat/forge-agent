@@ -46,3 +46,30 @@ export interface SessionsListResponse {
   limit: number;
   offset: number;
 }
+
+// Router / model tier types
+export interface RouterTierStatus {
+  selected_model: string | null;
+  preferred_models: string[];
+  available: string[];
+  missing: string[];
+  pull_command: string | null;
+}
+
+export interface RouterTiersResponse {
+  enabled: boolean;
+  tiers: Record<string, RouterTierStatus>;
+}
+
+export interface RouterTierConfig {
+  model: string;
+  description: string;
+  preferred_models: string[];
+}
+
+export interface RouterConfig {
+  enabled: boolean;
+  default_tier: string;
+  tiers: Record<string, RouterTierConfig>;
+  rules: Array<{ tier: string; keywords: string[] }>;
+}

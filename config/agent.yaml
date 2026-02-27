@@ -1,0 +1,149 @@
+agent:
+  name: forge-agent
+  version: 0.1.0
+
+  workspace:
+    base_path: ~/repos
+    persistent: true
+    cleanup_on_exit: false
+
+  llm:
+    provider: ollama
+    base_url: http://localhost:11434
+    # Default model (fallback when router is disabled or router.yaml not found).
+    # When router.yaml is present and enabled, this is overridden per-session.
+    # Router tiers: fast=qwen3:8b | smart=qwen3:14b | max=qwen3:30b-a3b
+    model: qwen3:14b
+    temperature: 0.0
+    max_tokens: 4096
+    timeout: 300
+
+  runtime:
+    max_iterations: 50
+    timeout_seconds: 3600
+    enable_parallel_tools: true
+    safety_checks: true
+    auto_execution: true
+    continuous_loop: true
+
+  logging:
+    level: INFO
+    format: json
+    output_path: ./workspace/logs
+
+  human_in_the_loop:
+    enabled: false
+
+  tools:
+    rag:
+      enabled: true
+      docs_path: "_docs"
+      embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+      persist_directory: ".chroma_db"
+      chunk_size: 800
+      chunk_overlap: 150
+      k: 8
+      score_threshold: 0.15
+      retriever_type: "similarity_score_threshold"
+      use_ensemble: false
+
+  system_prompt_template: |
+    /no_think
+    You are an AI agent with access to MCP tools for local filesystem and git operations.
+
+    PATH MAPPING (critical — memorize this):
+    - The user's ~/repos directory is mounted at {filesystem_root} in the filesystem container.
+    - The user's ~/repos directory is mounted at {workspace_root} in the git container.
+    - When the user says "~/repos/foo" or "~/repos", translate to {filesystem_root}/foo or {filesystem_root}.
+    - ALWAYS use absolute container paths. NEVER use ~, ., .., or relative paths.
+
+    TOOL SELECTION GUIDE:
+    - List directories / list repos / ls     → filesystem_list_directory(path="{filesystem_root}")
+    - Read a file                            → filesystem_read_text_file(path="{filesystem_root}/repo/file")
+    - Create directory / new repo / mkdir    → filesystem_create_directory(path="{filesystem_root}/repo-name")
+    - Write / create a file                  → filesystem_write_file(path="{filesystem_root}/repo/file", content="...")
+    - Delete a directory recursively         → delete_directory(path="/home/gabriel-miranda/repos/repo-name")  ← HOST-SIDE path
+    - Git operations                         → git_* tools with path="{workspace_root}/repo-name"
+    - Search web / fetch URL                 → fetch tool
+
+    Available tools:
+    {tools}
+
+    Rules:
+    - Always use tools for file/git/directory operations. Never guess file contents or directory listings.
+    - After using a tool, ALWAYS include the actual tool output in your reply (show the directory listing, file contents, etc.).
+    - Chain tools: explore → read → modify → verify.
+    - For conversational questions (greetings, explanations), answer directly without tools.
+    - Never ask "what would you like to do?" when the user asked for a specific action — just do it and show the result.
+
+  mcp:
+    filesystem:
+      type: docker
+      enabled: true
+      image: "mcp/filesystem:1.0.2"
+      volumes:
+        - "{{workspace.base_path}}:/projects"
+      args: ["/projects"]
+      timeout: 5000
+
+    git:
+      type: docker
+      enabled: true
+      image: "mcp/git:latest"
+      volumes:
+        - "{{workspace.base_path}}:/workspace"
+      args: []
+      timeout: 5000
+      environment:
+        GITHUB_TOKEN: "{{env:GITHUB_TOKEN}}"
+        GIT_CONFIG_COUNT: "1"
+        GIT_CONFIG_KEY_0: "safe.directory"
+        GIT_CONFIG_VALUE_0: "*"
+
+    github:
+      type: docker
+      enabled: true
+      image: "mcp/github:latest"
+      volumes:
+        - "{{workspace.base_path}}:/workspace"
+      args: []
+      timeout: 5000
+      environment:
+        GITHUB_PERSONAL_ACCESS_TOKEN: "{{env:GITHUB_PERSONAL_ACCESS_TOKEN}}"
+
+    fetch:
+      type: docker
+      enabled: true
+      image: "mcp/fetch:latest"
+      volumes:
+        - "{{workspace.base_path}}:/workspace"
+      args: []
+      timeout: 5000
+
+    # Disabled — too many tools hurt model accuracy
+    playwright:
+      type: docker
+      enabled: false
+      image: "mcp/playwright:latest"
+      volumes:
+        - "{{workspace.base_path}}:/workspace"
+      args: []
+      timeout: 5000
+
+    openapi:
+      type: docker
+      enabled: false
+      image: "mcp/openapi:latest"
+      volumes:
+        - "{{workspace.base_path}}:/workspace"
+      args: []
+      timeout: 5000
+
+    python_refactoring:
+      type: docker
+      enabled: false
+      image: "mcp/mcp-python-refactoring:latest"
+      volumes:
+        - "{{workspace.base_path}}:/workspace"
+      args: []
+      timeout: 5000

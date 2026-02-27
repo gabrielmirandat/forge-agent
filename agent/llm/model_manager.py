@@ -454,13 +454,95 @@ def get_model_manager() -> ModelManager:
 
 async def initialize_model_manager(config_dir: Path = Path("config")) -> ModelManager:
     """Initialize global model manager with all models.
-    
+
     Args:
         config_dir: Directory containing agent.*.yaml config files
-        
+
     Returns:
         Initialized ModelManager
     """
     manager = get_model_manager()
     await manager.initialize_all_models(config_dir)
     return manager
+
+
+async def discover_and_register_models(
+    ollama_url: str = "http://localhost:11434",
+) -> ModelManager:
+    """Discover all Ollama models via API and register them in the model manager.
+
+    This supplements initialize_all_models() by adding any locally available
+    Ollama models that don't have a config YAML file.
+
+    Args:
+        ollama_url: Ollama API base URL
+
+    Returns:
+        ModelManager with additionally registered models
+    """
+    from agent.llm.discovery import discover_ollama_models
+
+    manager = get_model_manager()
+
+    try:
+        discovered = await discover_ollama_models(ollama_url)
+    except Exception as e:
+        logger.warning(f"discover_and_register_models: discovery failed: {e}")
+        return manager
+
+    tasks = []
+    for m in discovered:
+        model_name = m["name"]
+        slug = model_name.replace(":", "_").replace(".", "_")
+        provider_id = f"ollama.{slug}"
+        if provider_id not in manager.models:
+            tasks.append(_register_discovered_model(manager, model_name, provider_id, ollama_url))
+
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+        logger.info(f"Registered {len(tasks)} additional Ollama model(s) via API discovery")
+
+    return manager
+
+
+async def _register_discovered_model(
+    manager: ModelManager,
+    model_name: str,
+    provider_id: str,
+    ollama_url: str,
+) -> None:
+    """Register a single discovered Ollama model in the manager."""
+    try:
+        try:
+            from langchain_ollama import ChatOllama
+        except ImportError:
+            from langchain_community.chat_models import ChatOllama
+
+        langchain_model = ChatOllama(
+            model=model_name,
+            base_url=ollama_url,
+            temperature=0.0,
+        )
+        health_status, error = await manager._check_model_health(model_name, ollama_url)
+        capabilities = {}
+        if health_status == "healthy":
+            capabilities = await manager._get_capabilities_from_api(model_name, ollama_url)
+
+        manager.models[provider_id] = ModelInstance(
+            model_name=model_name,
+            provider_id=provider_id,
+            config={
+                "model": model_name,
+                "base_url": ollama_url,
+                "temperature": 0.0,
+                "max_tokens": 4096,
+                "timeout": 300,
+            },
+            langchain_model=langchain_model,
+            health_status=health_status,
+            capabilities=capabilities,
+            error=error,
+        )
+        logger.debug(f"Registered discovered model: {model_name} (provider_id={provider_id})")
+    except Exception as e:
+        logger.warning(f"Failed to register discovered model {model_name}: {e}")

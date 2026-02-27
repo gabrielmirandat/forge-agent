@@ -1,86 +1,41 @@
-# Supported Models for Tool Calling
+# Forge Agent — Model Configuration
 
-This document lists the models that support tool calling in Ollama and how to configure them.
+## Active Models (3 router tiers)
 
-## Models with Tool Calling Support
+All models are served via Ollama (Docker, port 11434). Model selection is automatic via `config/router.yaml`.
 
-According to [Ollama's tool calling documentation](https://ollama.com/search?c=tools), the following models support tool calling:
+| Tier   | Model             | Size    | VRAM    | Use case |
+|--------|-------------------|---------|---------|----------|
+| fast   | qwen3:8b          | 5.2 GB  | ~5 GB   | Simple queries: git, list files, quick answers |
+| smart  | qwen3:14b         | 9.3 GB  | ~9 GB   | Most dev tasks: implement, debug, refactor (DEFAULT) |
+| max    | qwen3:30b-a3b     | ~19 GB  | GPU+RAM | Complex tasks: full architecture, lengthy docs |
 
-### Recommended Models
+**qwen3:30b-a3b** is a Mixture-of-Experts model (30B total / 3.3B active params).
+GPU handles active compute (~3.3B), RAM stores inactive weights.
 
-1. **qwen3:8b** (default)
-   - ✅ Tested and working
-   - Excellent tool-calling support, good balance of speed and quality
-   - Config: `agent.ollama.yaml` (default)
-   - To download: `ollama pull qwen3:8b`
-
-2. **hhao/qwen2.5-coder-tools**
-   - Alternative Qwen model optimized for coding
-   - Config: `agent.ollama.qwen.yaml`
-   - To download: `ollama pull hhao/qwen2.5-coder-tools`
-
-3. **qwen2.5:14b**
-   - Larger Qwen model with excellent tool-calling support
-   - Config: `agent.ollama.qwen14b.yaml`
-   - To download: `ollama pull qwen2.5:14b`
-
-### Other Models with Tool Calling Support
-
-- **devstral** (24b) - Best open source model for coding agents
-- **granite4** (350m, 1b, 3b) - Improved tool-calling capabilities
-- **command-r** (35b) - Optimized for conversational interaction and tool calling
-- **mistral-small3.2** (24b) - Improved function calling
-- **llama4** (16x17b, 128x17b) - Latest Llama with tool calling
-
-### Models with Limited or No Tool Calling Support
-
-- **llama3.1** - ❌ Removed: Tool calling does not work reliably with this model
-
-## How to Use
-
-1. **Download the model** (if not already available):
-   ```bash
-   ollama pull <model_name>
-   ```
-
-2. **Check available models**:
-   ```bash
-   ollama list
-   ```
-
-3. **Use the appropriate config file**:
-   - For qwen3:8b (default): `config/agent.ollama.yaml`
-   - For hhao/qwen2.5-coder-tools: `config/agent.ollama.qwen.yaml`
-   - For qwen2.5:14b: `config/agent.ollama.qwen14b.yaml`
-
-4. **Start the application** with the desired config:
-   ```bash
-   # Using default (qwen3:8b)
-   python -m api.app
-   
-   # Or specify a different config
-   CONFIG_PATH=config/agent.ollama.qwen14b.yaml python -m api.app
-   ```
-
-## Model Name Variations
-
-Model names in Ollama may vary. Common variations:
-
-- `qwen3:14b` vs `qwen2.5:14b` vs `qwen:14b`
-
-Always verify the exact model name with `ollama list` before configuring.
-
-## Testing Tool Calling
-
-To test if a model supports tool calling, use the test script:
+## Pull commands
 
 ```bash
-python scripts/test_qwen3_tool_calling.py  # For hhao/qwen2.5-coder-tools or qwen3:8b
-python scripts/test_qwen3_tool_calling.py  # For Qwen models
+ollama pull qwen3:8b        # fast tier (already installed)
+ollama pull qwen3:14b       # smart tier (already installed)
+ollama pull qwen3:30b-a3b   # max tier (~19GB, Q4_K_M)
 ```
 
-## References
+## Router configuration
 
-- [Ollama Tool Calling Documentation](https://docs.ollama.com/capabilities/tool-calling#python)
-- [Ollama Models with Tool Support](https://ollama.com/search?c=tools)
-- [LangChain Tool Calling Documentation](https://docs.langchain.com/oss/python/langchain/models#example-nested-structures)
+Edit `config/router.yaml` to adjust:
+- Which keywords route to which tier
+- Fallback model order per tier (`preferred_models`)
+- Enable/disable automatic routing (`enabled: true/false`)
+
+## Checking available models
+
+```bash
+# Via API:
+curl http://localhost:11434/api/tags | python3 -m json.tool
+
+# Via forge-agent API:
+curl http://localhost:8000/api/v1/config/models/available
+curl http://localhost:8000/api/v1/config/models/tiers
+curl http://localhost:8000/api/v1/config/router
+```

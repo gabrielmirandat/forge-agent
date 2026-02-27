@@ -1,0 +1,101 @@
+# LLM Router configuration
+#
+# Controls automatic model selection based on message content.
+# At startup, "preferred_models" are checked against locally available
+# Ollama models, and the best available is selected for each tier.
+#
+# Tiers (in order of capability / resource usage):
+#   nano  — tiny, for casual chat and simple Q&A
+#   fast  — small, GPU-only, for simple dev queries
+#   smart — medium, for most coding/dev tasks  (DEFAULT)
+#   max   — large, for complex reasoning tasks (requires ollama pull)
+
+router:
+  enabled: true
+  default_tier: smart
+
+  tiers:
+    nano:
+      model: qwen3:1.7b
+      description: "Chat simples: saudações, perguntas casuais, respostas curtas"
+      preferred_models:
+        - qwen3:1.7b
+        - qwen3:0.6b
+
+    fast:
+      model: qwen3:8b            # Updated at startup to best available
+      description: "Tarefas dev simples: git, listar arquivos, perguntas rápidas"
+      preferred_models:          # Checked in order; first locally available wins
+        - qwen3:8b
+        - qwen2.5:7b
+        - mistral:latest
+
+    smart:
+      model: qwen3:14b
+      description: "Maioria das tarefas: implementar, debugar, refatorar (PADRÃO)"
+      preferred_models:
+        - qwen3:14b
+        - qwen2.5:14b
+        - qwen3:8b               # fallback if no 14b model available
+
+    max:
+      model: qwen3:30b-a3b       # MoE 30B/3.3B-active, ~19GB Q4_K_M — Pull with: ollama pull qwen3:30b-a3b
+      description: "Tarefas complexas: arquitetura completa, documentos extensos"
+      preferred_models:
+        - qwen3:30b-a3b
+        - qwen3:32b
+
+  # Rules are evaluated in order; first match wins.
+  # If no rule matches, default_tier is used.
+  rules:
+    - tier: nano
+      keywords:
+        # Greetings / casual chat
+        - olá
+        - oi
+        - hello
+        - hi
+        - tudo bem
+        - bom dia
+        - boa tarde
+        - boa noite
+        - obrigado
+        - obrigada
+        - thanks
+        - thank you
+        - who are you
+        - quem é você
+
+    - tier: fast
+      keywords:
+        # Git operations
+        - git status
+        - git log
+        - git diff
+        - git branch
+        # Portuguese simple queries
+        - liste
+        - listar
+        - mostra
+        - mostrar
+        - o que é
+        - quem é
+        - qual é
+        # English simple queries
+        - what is
+        - who is
+        - list files
+        - show files
+
+    - tier: max
+      keywords:
+        # Complex architecture / document tasks
+        - arquitetura completa
+        - documento extenso
+        - escreva um livro
+        - detailed architecture
+        - comprehensive analysis
+        - full system design
+        - design document
+
+    # "smart" is the default tier — no explicit rule needed

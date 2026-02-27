@@ -14,6 +14,71 @@ router = APIRouter()
 logger = get_logger("api.config", "api")
 
 
+@router.get("/config/hints")
+async def get_hints() -> Dict[str, Any]:
+    """Return the current tool hints loaded from config/hints.yaml.
+
+    These hints are injected into user messages to guide tool selection.
+    The frontend uses this to display a 'Quick actions' panel.
+    """
+    from agent.utils.hints_loader import get_hints_loader
+    loader = get_hints_loader()
+    loader.reload()  # pick up any file changes without restarting
+    return {"hints": loader.all_hints()}
+
+
+@router.get("/config/palette")
+async def get_tool_palette(config: AgentConfig = Depends(get_config)) -> Dict[str, Any]:
+    """Return the two-level tool palette for the UI (MCP server groups → operations).
+
+    Templates contain filesystem_root and workspace_root resolved from MCP config.
+    The frontend uses this to build the Quick Actions two-panel dropdown.
+    """
+    from pathlib import Path
+    import yaml
+
+    # Resolve path roots from MCP config (mirrors format_system_prompt logic)
+    filesystem_root = "/projects"
+    workspace_root = "/workspace"
+    if hasattr(config, "mcp") and config.mcp:
+        fs_cfg = config.mcp.get("filesystem", {})
+        if isinstance(fs_cfg.get("args"), list) and fs_cfg["args"]:
+            filesystem_root = fs_cfg["args"][0]
+        git_cfg = config.mcp.get("git", {})
+        if isinstance(git_cfg.get("volumes"), list):
+            vol = git_cfg["volumes"][0]
+            if ":" in vol:
+                workspace_root = vol.split(":", 1)[1]
+
+    palette_path = Path("config/tools-palette.yaml")
+    if not palette_path.exists():
+        return {"palette": []}
+
+    with open(palette_path) as f:
+        data = yaml.safe_load(f) or {}
+
+    palette = []
+    for group in data.get("palette", []):
+        ops = []
+        for op in group.get("operations", []):
+            ops.append({
+                "id": op["id"],
+                "label": op["label"],
+                "template": op.get("template", "").format(
+                    filesystem_root=filesystem_root,
+                    workspace_root=workspace_root,
+                ),
+            })
+        palette.append({
+            "id": group["id"],
+            "label": group["label"],
+            "icon": group.get("icon", ""),
+            "operations": ops,
+        })
+
+    return {"palette": palette}
+
+
 @router.get("/config/llm")
 async def get_llm_config(config: AgentConfig = Depends(get_config)) -> Dict[str, Any]:
     """Get current LLM configuration.
@@ -371,3 +436,58 @@ async def restart_ollama(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to restart Ollama: {str(e)}",
         ) from e
+
+
+# ---------------------------------------------------------------------------
+# Model discovery + router endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/config/models/available")
+async def get_available_models(config: AgentConfig = Depends(get_config)) -> Dict[str, Any]:
+    """Return all models available in the local Ollama instance.
+
+    Combines /api/tags (downloaded) and /api/ps (currently in VRAM).
+    Does not require any config YAML per model — discovers dynamically.
+    """
+    from agent.llm.discovery import discover_ollama_models
+
+    try:
+        models = await discover_ollama_models(config.llm.base_url)
+        return {"models": models, "count": len(models)}
+    except Exception as e:
+        logger.warning(f"Failed to discover Ollama models: {e}")
+        return {"models": [], "count": 0, "error": str(e)}
+
+
+@router.get("/config/router")
+async def get_router_config() -> Dict[str, Any]:
+    """Return the current LLM router configuration (tiers, rules, enabled flag)."""
+    from agent.routing.router import get_router
+
+    rtr = get_router()
+    return {
+        "enabled": rtr.enabled,
+        "router": rtr.config,
+    }
+
+
+@router.get("/config/models/tiers")
+async def get_model_tiers(config: AgentConfig = Depends(get_config)) -> Dict[str, Any]:
+    """Return the status of each router tier: which model is selected, which are missing.
+
+    At startup, tiers are resolved against locally available Ollama models.
+    This endpoint shows the current state so the UI can display tier health.
+    """
+    from agent.llm.discovery import resolve_tier_models
+    from agent.routing.router import get_router
+
+    rtr = get_router()
+    if not rtr.enabled:
+        return {"enabled": False, "tiers": {}}
+
+    try:
+        tier_status = await resolve_tier_models(rtr.config, config.llm.base_url)
+        return {"enabled": True, "tiers": tier_status}
+    except Exception as e:
+        logger.warning(f"Failed to resolve tier models: {e}")
+        return {"enabled": True, "tiers": {}, "error": str(e)}

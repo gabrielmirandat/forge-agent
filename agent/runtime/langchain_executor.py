@@ -10,6 +10,7 @@ Tool-calling agents:
 - Callbacks provide observability and error handling
 """
 
+import asyncio
 import json
 import os
 import re
@@ -25,8 +26,6 @@ from langchain_core.agents import AgentAction, AgentFinish
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.outputs import ChatGeneration, Generation
-# Memory modules removed - not available in LangChain 1.2.6
-# Will use manual message history management instead
 
 from agent.config.loader import AgentConfig
 from agent.observability import get_logger, log_event
@@ -35,6 +34,7 @@ from agent.runtime.callbacks import ErrorHandlingCallbackHandler, ReasoningAndDe
 from agent.runtime.event_helpers import publish_if_session_exists
 from agent.storage import Storage
 from agent.tools.base import ToolRegistry
+from agent.utils.json_parser import extract_json_from_text
 
 
 class _JSONToolCallParserWrapper:
@@ -60,42 +60,6 @@ class _JSONToolCallParserWrapper:
         self._logger = logger
         self._session_id = session_id
     
-    def _extract_json_from_text(self, text: str) -> Optional[Dict[str, Any]]:
-        """Extract JSON from text, handling markdown code blocks.
-        
-        Args:
-            text: Text that may contain JSON in code blocks or plain text
-            
-        Returns:
-            Parsed JSON dict or None if no valid JSON found
-        """
-        # Try to extract JSON from markdown code blocks (```json ... ``` or ``` ... ```)
-        json_pattern = r'```(?:json)?\s*(\{.*?\})\s*```'
-        matches = re.findall(json_pattern, text, re.DOTALL)
-        
-        if matches:
-            for match in matches:
-                try:
-                    parsed = json.loads(match)
-                    if "name" in parsed and "arguments" in parsed:
-                        return parsed
-                except json.JSONDecodeError:
-                    continue
-        
-        # Try to find JSON object in plain text (look for tool call pattern)
-        json_pattern = r'\{[^{}]*"name"[^{}]*"arguments"[^{}]*\{[^{}]*\}[^{}]*\}'
-        matches = re.findall(json_pattern, text, re.DOTALL)
-        
-        for match in matches:
-            try:
-                parsed = json.loads(match)
-                if "name" in parsed and "arguments" in parsed:
-                    return parsed
-            except json.JSONDecodeError:
-                continue
-        
-        return None
-    
     def _inject_tool_calls(self, message: AIMessage) -> AIMessage:
         """Inject tool calls into AIMessage if JSON tool call is found in content.
         
@@ -117,7 +81,7 @@ class _JSONToolCallParserWrapper:
         content = str(message.content)
         
         # Check if content contains JSON tool call pattern
-        json_tool_call = self._extract_json_from_text(content)
+        json_tool_call = extract_json_from_text(content)
         
         if json_tool_call:
             tool_name = json_tool_call.get("name", "")
@@ -243,7 +207,7 @@ class _JSONToolCallParserWrapper:
             if isinstance(chunk, AIMessage):
                 accumulated_content += str(chunk.content) if chunk.content else ""
                 # Check if we have a complete JSON tool call
-                json_tool_call = self._extract_json_from_text(accumulated_content)
+                json_tool_call = extract_json_from_text(accumulated_content)
                 if json_tool_call and not (hasattr(chunk, "tool_calls") and chunk.tool_calls):
                     # Inject tool call into chunk
                     tool_name = json_tool_call.get("name", "")
@@ -292,42 +256,6 @@ class JSONToolCallParser(ToolsAgentOutputParser):
         """Get session ID."""
         return getattr(self, "_session_id", None)
     
-    def _extract_json_from_text(self, text: str) -> Optional[Dict[str, Any]]:
-        """Extract JSON from text, handling markdown code blocks.
-        
-        Args:
-            text: Text that may contain JSON in code blocks or plain text
-            
-        Returns:
-            Parsed JSON dict or None if no valid JSON found
-        """
-        # Try to extract JSON from markdown code blocks (```json ... ``` or ``` ... ```)
-        json_pattern = r'```(?:json)?\s*(\{.*?\})\s*```'
-        matches = re.findall(json_pattern, text, re.DOTALL)
-        
-        if matches:
-            for match in matches:
-                try:
-                    parsed = json.loads(match)
-                    if "name" in parsed and "arguments" in parsed:
-                        return parsed
-                except json.JSONDecodeError:
-                    continue
-        
-        # Try to find JSON object in plain text (look for tool call pattern)
-        json_pattern = r'\{[^{}]*"name"[^{}]*"arguments"[^{}]*\{[^{}]*\}[^{}]*\}'
-        matches = re.findall(json_pattern, text, re.DOTALL)
-        
-        for match in matches:
-            try:
-                parsed = json.loads(match)
-                if "name" in parsed and "arguments" in parsed:
-                    return parsed
-            except json.JSONDecodeError:
-                continue
-        
-        return None
-    
     def parse_result(
         self,
         result: list[Generation],
@@ -373,7 +301,7 @@ class JSONToolCallParser(ToolsAgentOutputParser):
                 # Check if content contains JSON tool call
                 if hasattr(message, "content") and message.content:
                     content_str = str(message.content)
-                    json_tool_call = self._extract_json_from_text(content_str)
+                    json_tool_call = extract_json_from_text(content_str)
                     
                     if json_tool_call:
                         # Inject tool call into message and re-parse
@@ -645,141 +573,72 @@ class LangChainExecutor:
         return await publish_if_session_exists(event_type, properties, self.storage)
 
     async def _ensure_agent_initialized(self, session_id: Optional[str] = None) -> None:
-        """Initialize the agent graph and bind tools to the model.
-        
-        This method is called lazily on first use to avoid event loop issues.
-        It performs the following steps:
-        1. Converts tools from registry to LangChain format
-        2. Binds tools to the LLM using bind_tools()
-        3. Builds the system prompt
-        4. Creates the agent graph using create_agent()
-        
-        Args:
-            session_id: Optional session ID for logging purposes.
-        
-        Raises:
-            ImportError: If required LangChain modules are not available.
-            ValueError: If tool binding fails or agent creation fails.
-        """
-        """Lazily load tools and create the LangChain agent graph in an async context.
-        
-        This method must be called from async code (e.g., run()) to avoid
-        manipulating the event loop (uvloop) in __init__.
-        """
+        """Lazily initialize the agent on first use (avoids event loop issues in __init__)."""
         if self.agent_executor is not None:
             return
-        
-        # Use provided session_id or fall back to default
         current_session_id = session_id or self._default_session_id
+        await self._load_and_bind_tools(current_session_id)
+        await self._build_prompt_template(current_session_id)
+        await self._create_agent_executor(current_session_id)
 
-        # Load LangChain tools from MCP servers using langchain-mcp-adapters (official pattern)
-        # Note: session_id is optional for tool loading (tools are shared across sessions)
+    async def _load_and_bind_tools(self, session_id: str) -> None:
+        """Load MCP tools from registry and bind them to the LLM."""
         self.langchain_tools = await self.tool_registry.get_langchain_tools(
-            session_id=self._default_session_id,  # Use default for tool loading (backward compatibility)
+            session_id=self._default_session_id,
             config=self.config,
         )
-
-        # Log tools for debugging
         self.logger.info(
             f"Initialized with {len(self.langchain_tools)} LangChain tools",
-            extra={"tool_names": [tool.name for tool in self.langchain_tools[:10]]},  # First 10 tools
+            extra={"tool_names": [tool.name for tool in self.langchain_tools[:10]]},
         )
 
-        # Bind tools to the model using bind_tools() (LangChain best practice)
-        # References:
-        # - LangChain: https://docs.langchain.com/oss/python/langchain/models#example-nested-structures
-        # - Ollama: https://docs.ollama.com/capabilities/tool-calling#python
-        # When bind_tools() is used, LangChain automatically converts tools to Ollama's format:
-        # {"type": "function", "function": {"name": "...", "description": "...", "parameters": {...}}}
-        # Ollama returns tool_calls in format: {"type": "function", "function": {"name": "...", "arguments": {...}}}
-        # We can use tool_choice parameter to control tool usage: "auto", "required", or specific tool name
+        tool_choice = getattr(self.config.llm, "tool_choice", None) or "auto"
         try:
-            # Check if config has tool_choice setting (for forcing tool usage)
-            # tool_choice can be set in config.llm.tool_choice
-            tool_choice = getattr(self.config.llm, "tool_choice", None)
-            if tool_choice is None:
-                # Default: "auto" - let model decide when to use tools
-                tool_choice = "auto"
-            
-            # Bind tools with optional tool_choice
-            # According to LangChain tests, tool_choice can be: "auto", "required", "any", or a tool name
-            # Reference: _helpers/langchain/libs/standard-tests/langchain_tests/unit_tests/chat_models.py
             if tool_choice != "auto":
-                # Only add tool_choice if it's explicitly set (some models may not support it)
                 try:
-                    # Try to use tool_choice if the model supports it
                     self.langchain_llm_with_tools = self.langchain_llm.bind_tools(
-                        self.langchain_tools,
-                        tool_choice=tool_choice
+                        self.langchain_tools, tool_choice=tool_choice
                     )
                     self.logger.info(
                         f"✅ Tools bound with tool_choice='{tool_choice}' - {len(self.langchain_tools)} tools",
-                        extra={"session_id": current_session_id, "tool_choice": tool_choice},
+                        extra={"session_id": session_id, "tool_choice": tool_choice},
                     )
                 except TypeError:
-                    # Model doesn't support tool_choice parameter, fall back to default
                     self.logger.debug(
-                        f"Model doesn't support tool_choice parameter, using default bind_tools()",
-                        extra={"session_id": current_session_id},
+                        "Model doesn't support tool_choice, using default bind_tools()",
+                        extra={"session_id": session_id},
                     )
                     self.langchain_llm_with_tools = self.langchain_llm.bind_tools(self.langchain_tools)
             else:
-                # Default: just bind tools without tool_choice
                 self.langchain_llm_with_tools = self.langchain_llm.bind_tools(self.langchain_tools)
-            
-            # Note: We don't apply _JSONToolCallParserWrapper here because it's not a Runnable
-            # and cannot be used in LCEL chains. Instead, we use JSONToolCallParser as a step
-            # in the chain to extract JSON tool calls from message content.
-            
-            # Log tool names for debugging
-            tool_names = [tool.name for tool in self.langchain_tools[:20]]  # First 20
+
             self.logger.info(
-                f"✅ Tools bound to model using bind_tools() - {len(self.langchain_tools)} tools",
+                f"✅ Tools bound - {len(self.langchain_tools)} tools",
                 extra={
-                    "session_id": current_session_id,
+                    "session_id": session_id,
                     "tools_count": len(self.langchain_tools),
-                    "tool_names_sample": tool_names,
+                    "tool_names_sample": [t.name for t in self.langchain_tools[:20]],
                     "tool_choice": tool_choice,
                 },
             )
-            
-            # Verify bind_tools worked by checking if model has tool calling capability
             if hasattr(self.langchain_llm_with_tools, "bound_tools"):
-                bound_tools_count = len(self.langchain_llm_with_tools.bound_tools) if self.langchain_llm_with_tools.bound_tools else 0
-                self.logger.info(
-                    f"✅ Verified: Model has {bound_tools_count} bound tools",
-                    extra={"session_id": current_session_id},
-                )
+                count = len(self.langchain_llm_with_tools.bound_tools or [])
+                self.logger.info(f"✅ Verified: Model has {count} bound tools", extra={"session_id": session_id})
         except Exception as e:
-            # Log error but continue without tool binding
-            # This allows the agent to work even if tool binding fails
-            # According to LangChain best practices, use msg variable for error messages
-            msg = f"bind_tools() failed: {str(e)}"
             self.logger.warning(
-                f"⚠️ {msg}, using model without bind_tools",
-                extra={"session_id": current_session_id},
+                f"⚠️ bind_tools() failed: {e}, using model without bind_tools",
+                extra={"session_id": session_id},
                 exc_info=True,
             )
             self.langchain_llm_with_tools = self.langchain_llm
 
-        # Build system prompt for the agent (needs langchain_tools to be set first)
+    async def _build_prompt_template(self, session_id: str) -> None:
+        """Build the ChatPromptTemplate from the formatted system prompt."""
         system_prompt_str = await self._format_system_prompt()
-
         self.logger.info(
             "System prompt built",
-            extra={
-                "session_id": current_session_id,
-                "prompt_length": len(system_prompt_str),
-                "tools_count": len(self.langchain_tools),
-            }
+            extra={"session_id": session_id, "prompt_length": len(system_prompt_str), "tools_count": len(self.langchain_tools)},
         )
-
-        # Create ChatPromptTemplate for create_tool_calling_agent
-        # According to LangChain documentation, the prompt must have:
-        # - "agent_scratchpad" as MessagesPlaceholder (required)
-        # - "chat_history" as MessagesPlaceholder (optional, for conversation history)
-        # - "input" for user input
-        # Reference: _helpers/langchain/libs/langchain/langchain_classic/agents/tool_calling_agent/base.py
         self.prompt_template = ChatPromptTemplate.from_messages([
             ("system", system_prompt_str),
             MessagesPlaceholder("chat_history", optional=True),
@@ -787,90 +646,51 @@ class LangChainExecutor:
             MessagesPlaceholder("agent_scratchpad"),
         ])
 
-        # Create agent using create_tool_calling_agent with custom parser
-        # According to LangChain documentation:
-        # - llm: LLM with tools bound via bind_tools() (already done above)
-        # - tools: List of tools for the agent to execute
-        # - prompt: ChatPromptTemplate with agent_scratchpad MessagesPlaceholder
-        # Reference: _helpers/langchain/libs/langchain/langchain_classic/agents/tool_calling_agent/base.py
+    async def _create_agent_executor(self, session_id: str) -> None:
+        """Create the agent chain and AgentExecutor."""
+        from langchain_core.runnables import RunnablePassthrough
+        from langchain_classic.agents.format_scratchpad.tools import format_to_tool_messages
+
         try:
-            # Create agent with standard parser first
-            standard_agent = create_tool_calling_agent(
-                llm=self.langchain_llm_with_tools,  # Model with tools already bound via bind_tools()
-                tools=self.langchain_tools,  # Tools list
-                prompt=self.prompt_template,  # ChatPromptTemplate with required placeholders
-            )
-            
-            # Replace the ToolsAgentOutputParser with our custom JSON parser
-            # The agent is a Runnable chain, we need to replace the last step
-            # Standard chain: RunnablePassthrough | prompt | llm | ToolsAgentOutputParser()
-            # We'll create a custom chain with our parser
-            from langchain_core.runnables import RunnablePassthrough
-            from langchain_classic.agents.format_scratchpad.tools import format_to_tool_messages
-            
-            # Create custom agent with JSON parser
-            # Note: The wrapper is applied to langchain_llm_with_tools, but the parser
-            # needs to be in the chain to intercept the final output
-            custom_parser = JSONToolCallParser(self.logger, current_session_id)
-            
-            # Create the chain manually with our custom parser
-            # Standard chain: RunnablePassthrough | prompt | llm | parser
-            # The parser extracts JSON tool calls from message content when needed
+            custom_parser = JSONToolCallParser(self.logger, session_id)
             self.agent = (
                 RunnablePassthrough.assign(
                     agent_scratchpad=lambda x: format_to_tool_messages(x["intermediate_steps"]),
                 )
                 | self.prompt_template
-                | self.langchain_llm_with_tools  # LLM with tools bound (no wrapper needed)
-                | custom_parser  # Our custom parser that checks content for JSON tool calls
+                | self.langchain_llm_with_tools
+                | custom_parser
             )
-            
-            self.logger.info(
-                "✅ Agent created with create_tool_calling_agent",
-                extra={"session_id": current_session_id}
-            )
+            self.logger.info("✅ Agent created with create_tool_calling_agent", extra={"session_id": session_id})
         except Exception as e:
-            # Log error and re-raise - this is a critical failure
-            msg = f"Failed to create tool calling agent: {str(e)}"
-            self.logger.error(
-                f"❌ {msg}",
-                extra={"session_id": current_session_id},
-                exc_info=True,
-            )
+            msg = f"Failed to create tool calling agent: {e}"
+            self.logger.error(f"❌ {msg}", extra={"session_id": session_id}, exc_info=True)
             raise ValueError(msg) from e
-        
-        # Create AgentExecutor to run the agent
-        # AgentExecutor manages the tool calling loop and handles errors
-        # Reference: _helpers/langchain/libs/langchain/langchain_classic/agents/tool_calling_agent/base.py
+
         try:
             self.agent_executor = AgentExecutor(
                 agent=self.agent,
                 tools=self.langchain_tools,
-                verbose=False,  # Disable verbose logging to reduce "Entering new None chain" messages
-                max_iterations=self.max_iterations,  # Limit iterations to prevent infinite loops
-                max_execution_time=300.0,  # Maximum 5 minutes execution time
-                early_stopping_method="force",  # Force stop if max iterations reached
-                handle_parsing_errors=True,  # Handle tool call parsing errors gracefully - enables auto-correction
-                return_intermediate_steps=True,  # Return intermediate steps for debugging and analysis
+                verbose=False,
+                max_iterations=self.max_iterations,
+                max_execution_time=300.0,
+                early_stopping_method="force",
+                handle_parsing_errors=True,
+                handle_tool_errors=True,  # Feed ToolException back to LLM so it can retry
+                return_intermediate_steps=True,
             )
-            
             self.logger.info(
                 f"✅ AgentExecutor created with {len(self.langchain_tools)} tools",
                 extra={
-                    "session_id": current_session_id,
+                    "session_id": session_id,
                     "tools_count": len(self.langchain_tools),
                     "model_type": type(self.langchain_llm_with_tools).__name__,
                     "max_iterations": self.max_iterations,
-                }
+                },
             )
         except Exception as e:
-            # Log error and re-raise - this is a critical failure
-            msg = f"Failed to create AgentExecutor: {str(e)}"
-            self.logger.error(
-                f"❌ {msg}",
-                extra={"session_id": current_session_id},
-                exc_info=True,
-            )
+            msg = f"Failed to create AgentExecutor: {e}"
+            self.logger.error(f"❌ {msg}", extra={"session_id": session_id}, exc_info=True)
             raise ValueError(msg) from e
     
     def _configure_langsmith(self):
@@ -1095,118 +915,99 @@ class LangChainExecutor:
         config: Any,
         langchain_tools: List[Any]
     ) -> str:
-        """Format system prompt with tool information.
-        
-        This static method can be called from outside to preview the system prompt
-        that will be sent to the LLM.
-        
-        Available template variables:
-        - {workspace_base}: Workspace base path
-        - {tools}: List of MCP servers with their tools in format "tool : server_name - description - tool1, tool2, ..."
-        
+        """Format system prompt with actual loaded tool names.
+
+        Template variables:
+        - {workspace_base}: Workspace base path on the host (e.g. ~/repos)
+        - {filesystem_root}: Container path used by the filesystem MCP tool (e.g. /projects)
+        - {workspace_root}: Container path used by git/other MCP tools (e.g. /workspace)
+        - {tools}: Actual MCP tool names grouped by server, e.g. "filesystem: filesystem_list_directory, ..."
+
         Args:
             config: AgentConfig instance
-            langchain_tools: List of LangChain tools (not used directly, we query MCP manager instead)
-            
+            langchain_tools: Loaded LangChain tools from MCP servers
+
         Returns:
             Formatted system prompt string
         """
         workspace_base = "~/repos"
         if hasattr(config, "workspace") and hasattr(config.workspace, "base_path"):
             workspace_base = config.workspace.base_path
-        
-        # Get tools directly from YAML config (simplified approach)
-        # Read enabled MCP servers from config and use known tool mappings
-        all_mcp_configs = config.mcp or {}
-        
-        # Known tools for each MCP server (based on official MCP server documentation)
-        # This avoids dynamic queries and makes the system prompt generation faster and more reliable
-        known_tools_by_server: Dict[str, List[str]] = {
-            "filesystem": [
-                "list_directory", "read_file", "write_file", "create_directory",
-                "move_file", "search_files", "directory_tree", "edit_file",
-                "get_file_info", "list_allowed_directories", "read_multiple_files"
-            ],
-            "playwright": [
-                "navigate", "click", "fill_form", "take_screenshot", "evaluate",
-                "press_key", "select_option", "wait_for", "hover", "drag",
-                "file_upload", "handle_dialog", "console_messages", "network_requests",
-                "snapshot", "tabs", "resize", "close", "navigate_back", "run_code", "install"
-            ],
-            "openapi": [
-                "validate_document", "get_list_of_operations", "generate_curl_command",
-                "get_known_responses", "get_extraction_guidance"
-            ],
-            "python_refactoring": [
-                "analyze_python_file", "analyze_python_package", "find_long_functions",
-                "find_package_issues", "get_package_metrics", "analyze_security_and_patterns",
-                "tdd_refactoring_guidance", "test_coverage"
-            ],
-            "git": [
-                "status", "add", "commit", "log", "diff", "checkout", "create_branch",
-                "reset", "show", "diff_staged", "diff_unstaged", "init"
-            ],
-            "github": [
-                "list_repos", "get_repo", "create_repo", "list_issues", "create_issue",
-                "list_pulls", "create_pull", "get_user"
-            ],
-            "fetch": [
-                "fetch"
-            ],
-        }
-        
-        # Build tools list from enabled servers in config
-        all_tools_by_server: Dict[str, List[str]] = {}
-        for server_name, mcp_config in all_mcp_configs.items():
-            if mcp_config.get("enabled") is False:
-                continue
-            
-            # Use known tools if available, otherwise use empty list
-            if server_name in known_tools_by_server:
-                all_tools_by_server[server_name] = known_tools_by_server[server_name]
-            else:
-                # For unknown servers, use server name as a generic tool
-                all_tools_by_server[server_name] = [server_name]
-        
-        # Format tools with detailed summaries: "server_name - whenever you need X - description - Available functions: func1, func2, ..."
-        tools_list = []
-        for server_name in sorted(all_tools_by_server.keys()):
-            tool_names = all_tools_by_server[server_name]
-            summary = LangChainExecutor._generate_server_summary(server_name, tool_names)
-            tools_list.append(summary)
-        
-        tools_str = "\n".join(tools_list) if tools_list else "No tools available"
-        
-        # Use custom template from config if available, otherwise use default
+
+        # Extract container-side mount paths from MCP config so the model knows
+        # which path prefix to use when calling each tool.
+        filesystem_root = "/projects"
+        workspace_root = "/workspace"
+        if hasattr(config, "mcp") and config.mcp:
+            fs_cfg = config.mcp.get("filesystem", {})
+            # args: ["/projects"] tells the MCP server which dir it can access
+            if isinstance(fs_cfg.get("args"), list) and fs_cfg["args"]:
+                filesystem_root = fs_cfg["args"][0]
+            elif isinstance(fs_cfg.get("volumes"), list) and fs_cfg["volumes"]:
+                # fallback: parse "host_path:/container_path" volume string
+                vol = fs_cfg["volumes"][0]
+                if ":" in vol:
+                    filesystem_root = vol.split(":", 1)[1]
+
+            git_cfg = config.mcp.get("git", {})
+            if isinstance(git_cfg.get("volumes"), list) and git_cfg["volumes"]:
+                vol = git_cfg["volumes"][0]
+                if ":" in vol:
+                    workspace_root = vol.split(":", 1)[1]
+
+        # Build tool list from the actual loaded tools.
+        # Some MCP servers prefix their tools (e.g. git_status, browser_close),
+        # others use bare names (e.g. list_directory from the filesystem server).
+        # Group by checking which MCP server name the tool name starts with;
+        # fall back to the first word before "_" if no match.
+        mcp_server_names: List[str] = sorted(
+            config.mcp.keys() if hasattr(config, "mcp") and config.mcp else [],
+            key=len, reverse=True  # longest first so "python_refactoring" matches before "python"
+        )
+        tools_by_server: Dict[str, List[str]] = {}
+        for tool in langchain_tools:
+            server = None
+            for sname in mcp_server_names:
+                if tool.name.startswith(sname + "_") or tool.name == sname:
+                    server = sname
+                    break
+            if server is None:
+                # Fall back: first word before "_"
+                parts = tool.name.split("_", 1)
+                server = parts[0] if len(parts) > 1 else "other"
+            tools_by_server.setdefault(server, []).append(tool.name)
+
+        tools_str = "\n".join(
+            f"{server}: {', '.join(sorted(names))}"
+            for server, names in sorted(tools_by_server.items())
+        ) if tools_by_server else "No tools available"
+
         if hasattr(config, "system_prompt_template") and config.system_prompt_template:
             template = config.system_prompt_template
+            # /no_think is a Qwen3 control token that disables the thinking chain.
+            # Small models (1.7b, 0.6b) don't support it and echo it back to users.
+            model_name = config.llm.model if hasattr(config, "llm") and config.llm else ""
+            _small_model = any(s in model_name for s in ("1.7b", "0.6b", "1b", "2b"))
+            if _small_model:
+                template = template.replace("/no_think\n", "").replace("/no_think", "")
         else:
-            # Default template
-            template = """You are a code agent that should help the user manage their repositories.
-All repositories are in the system at {workspace_base} and you have tools available to manipulate these repos.
+            template = (
+                "You are an AI agent with access to MCP tools. "
+                "Repositories are at {filesystem_root}/ (filesystem tool) "
+                "and {workspace_root}/ (git/other tools).\n\n"
+                "Available tools:\n{tools}\n\n"
+                "Rules:\n"
+                "- Always use tools for file/git operations. Never guess content.\n"
+                "- Chain tools when needed: explore → read → modify → verify.\n"
+                "- For conversational questions, respond directly without tools."
+            )
 
-To manipulate the repos, you must use these tools in tool chaining. Show what you are thinking. Auto-correct yourself if necessary.
-
-IMPORTANT: For simple conversational questions, respond directly without using any tools. Only use tools when you need to perform actual operations.
-
-When using tools:
-- Use natural repository names (e.g., "forge-agent") - the system will automatically resolve paths
-- Be specific about what you want to do
-- Use tool chaining when needed to accomplish complex tasks
-
-Available tools:
-{tools}"""
-        
-        # Format template with placeholders
-        # Available variables:
-        # - {workspace_base}: Workspace base path
-        # - {tools}: MCP servers with tools (format: "server_name - whenever you need X - description - Available functions: ...")
-        formatted = template.format(
+        return template.format(
             workspace_base=workspace_base,
-            tools=tools_str
+            filesystem_root=filesystem_root,
+            workspace_root=workspace_root,
+            tools=tools_str,
         )
-        
-        return formatted
     
     async def _format_system_prompt(self) -> str:
         """Format system prompt using instance tools and config.
@@ -1369,8 +1170,34 @@ Available tools:
             # Build input for AgentExecutor
             # AgentExecutor expects a dict with "input" and optionally "chat_history"
             # Reference: _helpers/langchain/libs/langchain/langchain_classic/agents/tool_calling_agent/base.py
+
+            # Pre-process: inject tool hints from config/hints.yaml
+            # Models pick wrong tools due to semantic bias when 60+ tools are in context;
+            # injecting a hint directly into the user message overrides that bias reliably.
+            from agent.utils.hints_loader import get_hints_loader
+            _filesystem_root = "/projects"
+            _workspace_root = "/workspace"
+            if hasattr(self.config, "mcp") and self.config.mcp:
+                _fs_cfg = self.config.mcp.get("filesystem", {})
+                if isinstance(_fs_cfg.get("args"), list) and _fs_cfg["args"]:
+                    _filesystem_root = _fs_cfg["args"][0]
+                _git_cfg = self.config.mcp.get("git", {})
+                if isinstance(_git_cfg.get("volumes"), list) and _git_cfg["volumes"]:
+                    _vol = _git_cfg["volumes"][0]
+                    if ":" in _vol:
+                        _workspace_root = _vol.split(":", 1)[1]
+            _hints_loader = get_hints_loader()
+            effective_message = _hints_loader.apply(
+                user_message, _filesystem_root, _workspace_root
+            )
+            if effective_message != user_message:
+                self.logger.debug(
+                    "Hint injected into user message",
+                    extra={"session_id": current_session_id, "hint_applied": True},
+                )
+
             input_data: Dict[str, Any] = {
-                "input": user_message,
+                "input": effective_message,
             }
             
             # Add chat history if available
@@ -1500,13 +1327,10 @@ Available tools:
                                             "content": reasoning,
                                         }, current_session_id)
                                     elif block["type"] == "tool_call_chunk":
-                                        # Publish tool call chunk (only if session exists)
-                                        tool_call = block.get("tool_call", {})
-                                        await self._safe_publish(EventType.TOOL_CALLED, {
-                                            "session_id": current_session_id,
-                                            "tool": tool_call.get("name", ""),
-                                            "arguments": tool_call.get("args", {}),
-                                        }, current_session_id)
+                                        # tool_call_chunk is a partial streaming event — do NOT publish TOOL_CALLED
+                                        # here since the tool name/args may be incomplete.
+                                        # The canonical TOOL_CALLED event is published in on_tool_start instead.
+                                        pass
                                     elif block["type"] == "text":
                                         # Collect text tokens (don't publish individually to avoid duplication)
                                         token = block.get("text", "")
@@ -1565,21 +1389,24 @@ Available tools:
                                 # Try multiple ways to get token usage from LangChain/Ollama response
                                 # Method 1: From event_data response_metadata
                                 response_metadata = event_data.get("response_metadata", {})
+                                eval_duration_ns: Optional[int] = None
                                 if response_metadata:
-                                    # Ollama format (prompt_eval_count, eval_count)
+                                    # Ollama format (prompt_eval_count, eval_count, eval_duration)
                                     if "prompt_eval_count" in response_metadata:
                                         prompt_tokens = response_metadata.get("prompt_eval_count", 0) or 0
                                     if "eval_count" in response_metadata:
                                         completion_tokens = response_metadata.get("eval_count", 0) or 0
+                                    # eval_duration is nanoseconds of pure generation time (no prompt eval)
+                                    eval_duration_ns = response_metadata.get("eval_duration")
                                     total_tokens = prompt_tokens + completion_tokens
-                                    
+
                                     # Also check for usage object
                                     if "usage" in response_metadata:
                                         usage = response_metadata["usage"]
                                         prompt_tokens = usage.get("prompt_tokens", prompt_tokens)
                                         completion_tokens = usage.get("completion_tokens", completion_tokens)
                                         total_tokens = usage.get("total_tokens", total_tokens)
-                                
+
                                 # Method 2: From llm_output.response_metadata (AIMessage)
                                 if hasattr(llm_output, "response_metadata"):
                                     metadata = llm_output.response_metadata
@@ -1591,7 +1418,9 @@ Available tools:
                                             completion_tokens = metadata.get("eval_count", 0) or 0
                                         if prompt_tokens or completion_tokens:
                                             total_tokens = prompt_tokens + completion_tokens
-                                
+                                        if eval_duration_ns is None:
+                                            eval_duration_ns = metadata.get("eval_duration")
+
                                 # Method 3: From llm_output.usage_metadata (if available)
                                 if hasattr(llm_output, "usage_metadata"):
                                     usage_meta = llm_output.usage_metadata
@@ -1599,7 +1428,12 @@ Available tools:
                                         prompt_tokens = getattr(usage_meta, "input_tokens", prompt_tokens) or prompt_tokens
                                         completion_tokens = getattr(usage_meta, "output_tokens", completion_tokens) or completion_tokens
                                         total_tokens = prompt_tokens + completion_tokens
-                                
+
+                                # Calculate tokens/sec from Ollama eval_duration (nanoseconds)
+                                tokens_per_second: Optional[float] = None
+                                if eval_duration_ns and eval_duration_ns > 0 and completion_tokens > 0:
+                                    tokens_per_second = round(completion_tokens / (eval_duration_ns / 1e9), 1)
+
                                 # Get model name from event or config
                                 model_name = event_data.get("name", "")
                                 if not model_name and hasattr(llm_output, "response_metadata"):
@@ -1608,14 +1442,14 @@ Available tools:
                                         model_name = metadata.get("model", "")
                                 if not model_name:
                                     model_name = self.config.llm.model if self.config.llm else "unknown"
-                                
+
                                 # Calculate response time if available
                                 response_time = None
                                 if hasattr(llm_output, "response_metadata"):
                                     metadata = llm_output.response_metadata
                                     if metadata and "response_time" in metadata:
                                         response_time = metadata["response_time"]
-                                
+
                                 # Always record usage (even if tokens are 0) to track calls
                                 # This ensures we at least count the number of calls
                                 metrics = get_llm_metrics()
@@ -1626,10 +1460,11 @@ Available tools:
                                     completion_tokens=completion_tokens,
                                     total_tokens=total_tokens if total_tokens > 0 else None,
                                     response_time=response_time,
+                                    tokens_per_second=tokens_per_second,
                                 )
                                 self.logger.debug(
                                     f"Recorded LLM metrics: model={model_name}, "
-                                    f"tokens={total_tokens}, calls=1, session={current_session_id}"
+                                    f"tokens={total_tokens}, tps={tokens_per_second}, session={current_session_id}"
                                 )
                             except Exception as e:
                                 self.logger.warning(f"Failed to track LLM metrics: {e}", exc_info=True)
@@ -1763,7 +1598,6 @@ Available tools:
                 else:
                     # Fallback: invoke to get result (shouldn't happen with astream_events)
                     self.logger.warning("No output from astream_events, falling back to invoke")
-                    import asyncio
                     result = await asyncio.to_thread(
                         self.agent_executor.invoke,
                         input_data,
@@ -1834,24 +1668,13 @@ Available tools:
                                 )
                                 break
                         
-                        # Also check for tool calls in messages for logging
+                        # Log tool calls found in messages (already published via on_tool_start)
                         for msg in messages:
                             if hasattr(msg, "tool_calls") and msg.tool_calls:
                                 self.logger.info(
                                     f"🔧 Found tool_calls in message: {len(msg.tool_calls)} calls",
                                     extra={"session_id": current_session_id, "tool_calls": msg.tool_calls}
                                 )
-                                # Extract tool call info (LangChain format)
-                                tool_call = msg.tool_calls[0]
-                                tool_name = tool_call.get("name", "") if isinstance(tool_call, dict) else getattr(tool_call, "name", "")
-                                tool_args = tool_call.get("args", {}) if isinstance(tool_call, dict) else getattr(tool_call, "args", {})
-                                
-                                # Only publish if session still exists
-                                await self._safe_publish(EventType.TOOL_CALLED, {
-                                    "session_id": current_session_id,
-                                    "tool": tool_name,
-                                    "arguments": tool_args,
-                                }, current_session_id)
                     else:
                         # Result is not in expected format, try to extract text from various possible keys
                         # Check common keys that might contain the response text
@@ -1919,7 +1742,9 @@ Available tools:
                         "content": final_output,
                         "streaming": False,
                     }, current_session_id)
-                    
+
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 # Log error during agent execution
                 # According to LangChain best practices, use msg variable for error messages
@@ -2003,10 +1828,11 @@ Available tools:
                     "retries_detected": len([e for e in reasoning_debug_summary["tool_errors"] if e.get("error")]),
                 },
             }
-                
+
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             # Log execution error
-            # According to LangChain best practices, use msg variable for error messages
             msg = str(e)
             duration = time.time() - start_time
             log_event(
@@ -2023,73 +1849,82 @@ Available tools:
             }
 
 
-# Singleton executor instance
-_shared_executor: Optional[LangChainExecutor] = None
+# Per-session executor cache: session_id -> LangChainExecutor
+# Each session gets its own executor so model selection is isolated per session.
+_session_executors: Dict[str, LangChainExecutor] = {}
+
+
+def has_session_executor(session_id: str) -> bool:
+    """Return True if the session already has a dedicated executor."""
+    return session_id in _session_executors
+
+
+def clear_session_executor(session_id: str) -> None:
+    """Remove the executor for a specific session (call when session is deleted)."""
+    if session_id in _session_executors:
+        _session_executors.pop(session_id, None)
+        logger = get_logger("langchain_executor", "executor")
+        logger.info(f"Cleared executor for session {session_id}")
 
 
 def clear_shared_executor() -> None:
-    """Clear the shared executor cache to force recreation with new config.
-    
-    This should be called when the LLM model or configuration changes
-    to ensure the executor uses the new model.
+    """Clear all session executors (e.g. after a global config/model change).
+
+    Named 'clear_shared_executor' for backward compatibility with callers in
+    api/routes/config.py that trigger this on LLM provider switches.
     """
-    global _shared_executor
-    if _shared_executor is not None:
+    count = len(_session_executors)
+    _session_executors.clear()
+    if count:
         logger = get_logger("langchain_executor", "executor")
-        old_model = _shared_executor.config.llm.model if _shared_executor.config else "unknown"
-        logger.info(f"🔄 Clearing shared executor cache (old model: {old_model})")
-        _shared_executor = None
+        logger.info(f"Cleared {count} session executor(s) due to global config change")
 
 
-async def get_shared_executor(
-    config: Optional[AgentConfig] = None,
-    tool_registry: Optional[ToolRegistry] = None,
+async def get_session_executor(
+    session_id: str,
+    config: AgentConfig,
+    tool_registry: ToolRegistry,
     storage: Optional[Storage] = None,
 ) -> LangChainExecutor:
-    """Get or create shared LangChainExecutor instance (singleton).
-    
-    This function returns a shared executor instance that can be used across
-    multiple sessions, reducing resource usage and initialization time.
-    
-    If the executor exists but the model has changed, it will be recreated
-    with the new model configuration.
-    
+    """Get or create a dedicated LangChainExecutor for a session.
+
+    The executor is reused across messages within a session as long as the model
+    stays the same. When the router selects a different model (e.g. first message
+    was a greeting → nano, next is a coding task → smart), a new executor is
+    created for that session so the right model handles the task. Conversation
+    history is preserved in the DB regardless of executor swaps.
+
     Args:
-        config: Agent configuration (required on first call or when model changes)
-        tool_registry: Tool registry (required on first call or when model changes)
+        session_id: Session identifier
+        config: Agent configuration for this message (may differ from previous)
+        tool_registry: Tool registry
         storage: Optional Storage instance for session existence checks
-        
+
     Returns:
-        Shared LangChainExecutor instance
-        
-    Raises:
-        ValueError: If config or tool_registry are not provided on first call
+        LangChainExecutor for this session (possibly newly created if model changed)
     """
-    global _shared_executor
-    
-    # Check if executor exists and if model has changed
-    if _shared_executor is not None and config is not None:
-        current_model = _shared_executor.config.llm.model if _shared_executor.config else None
-        new_model = config.llm.model if config else None
-        
-        # If model changed, clear executor to force recreation
-        if current_model != new_model:
-            logger = get_logger("langchain_executor", "executor")
-            logger.info(f"🔄 Model changed from {current_model} to {new_model}, recreating executor")
-            _shared_executor = None
-    
-    if _shared_executor is None:
-        if config is None or tool_registry is None:
-            raise ValueError(
-                "config and tool_registry must be provided on first call to get_shared_executor()"
-            )
-        _shared_executor = LangChainExecutor(
-            config=config,
-            tool_registry=tool_registry,
-            storage=storage,
+    _log = get_logger("langchain_executor", "executor")
+    existing = _session_executors.get(session_id)
+
+    if existing is not None:
+        if existing.config.llm.model == config.llm.model:
+            return existing  # Same model — reuse executor
+        # Model changed between messages — create new executor; history in DB is preserved
+        _log.info(
+            f"Session {session_id}: model changed "
+            f"{existing.config.llm.model} → {config.llm.model}, recreating executor"
         )
-        logger = get_logger("langchain_executor", "executor")
-        model_name = config.llm.model if config else "unknown"
-        logger.info(f"✅ Created shared LangChainExecutor instance (singleton) with model: {model_name}")
-    
-    return _shared_executor
+
+    executor = LangChainExecutor(
+        config=config,
+        tool_registry=tool_registry,
+        storage=storage,
+    )
+    _session_executors[session_id] = executor
+    _log.info(
+        f"Created executor for session {session_id} "
+        f"(model={config.llm.model}, total_sessions={len(_session_executors)})"
+    )
+    return executor
+
+

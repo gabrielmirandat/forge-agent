@@ -124,6 +124,29 @@ export async function listLLMProviders(): Promise<{
   return fetchJson(`${API_BASE}/config/llm/providers`);
 }
 
+export async function getHints(): Promise<{
+  hints: Array<{
+    id: string;
+    description: string;
+    patterns: string[];
+    requires_no_path: boolean;
+    inject: string;
+  }>;
+}> {
+  return fetchJson(`${API_BASE}/config/hints`);
+}
+
+export async function getPalette(): Promise<{
+  palette: Array<{
+    id: string;
+    label: string;
+    icon: string;
+    operations: Array<{ id: string; label: string; template: string }>;
+  }>;
+}> {
+  return fetchJson(`${API_BASE}/config/palette`);
+}
+
 export async function updateLLMConfig(
   config: {
     provider: string;
@@ -163,4 +186,15 @@ export async function restartOllama(): Promise<{
   return fetchJson(`${API_BASE}/config/llm/restart`, {
     method: 'POST',
   });
+}
+
+export async function getRouterConfig(): Promise<{
+  enabled: boolean;
+  router: import('../types/api').RouterConfig;
+}> {
+  return fetchJson(`${API_BASE}/config/router`);
+}
+
+export async function getModelTiers(): Promise<import('../types/api').RouterTiersResponse> {
+  return fetchJson(`${API_BASE}/config/models/tiers`);
 }

@@ -25,6 +25,9 @@ class EventType(str, Enum):
     SESSION_CREATED = "session.created"
     SESSION_MESSAGE_ADDED = "session.message.added"
     SESSION_UPDATED = "session.updated"
+
+    # Router events
+    ROUTER_DECISION = "router.decision"
     
     # Execution events
     EXECUTION_STARTED = "execution.started"

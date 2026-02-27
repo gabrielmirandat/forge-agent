@@ -1,0 +1,84 @@
+# Agent tool hints
+#
+# Each hint defines:
+#   id:           unique identifier
+#   description:  shown in the UI when the user browses available actions
+#   patterns:     list of substrings; if any matches the (lowercased) user message, the hint is injected
+#   requires_no_abspath: when true, only inject if the message does NOT contain an absolute path (/...)
+#   inject:       text appended to the user message (supports {filesystem_root} and {workspace_root})
+#
+# NOTE: ~/repos and ~ in the message are NOT considered absolute paths for hint filtering.
+# Only messages that already have /projects/... or /workspace/... paths skip hints.
+
+hints:
+  - id: list_workspace
+    description: "List all repositories / files in the workspace"
+    patterns:
+      - "liste"
+      - "listar"
+      - "list"
+      - "ls"
+      - "dir"
+      - "quais projetos"
+      - "quais repos"
+      - "o que existe"
+      - "show files"
+      - "mostrar arquivos"
+      - "what repos"
+      - "listar reposit"
+      - "list repos"
+      - "list files"
+    requires_no_abspath: true
+    inject: 'use filesystem_list_directory with path="{filesystem_root}" (this lists ~/repos which maps to {filesystem_root})'
+
+  - id: create_directory
+    description: "Create a new directory or repository"
+    patterns:
+      - "crie um repo"
+      - "criar repo"
+      - "create repo"
+      - "novo repo"
+      - "new repo"
+      - "crie um diretório"
+      - "crie uma pasta"
+      - "create directory"
+      - "create folder"
+      - "inicializar repo"
+    requires_no_abspath: false
+    inject: 'use filesystem_create_directory with path="{filesystem_root}/<repo-name>" to create the directory (~/repos maps to {filesystem_root})'
+
+  - id: write_file
+    description: "Create or write a file"
+    patterns:
+      - "crie um arquivo"
+      - "criar arquivo"
+      - "escreva um arquivo"
+      - "create a file"
+      - "write a file"
+      - "hello_world.py"
+      - "makefile"
+      - "hello world"
+    requires_no_abspath: false
+    inject: 'use filesystem_write_file with path="{filesystem_root}/<repo>/<filename>" and content=<file-content> to create files'
+
+  - id: delete_directory
+    description: "Delete a repository or directory"
+    patterns:
+      - "delete o repo"
+      - "deletar repo"
+      - "apagar repo"
+      - "remover repo"
+      - "delete repo"
+      - "remove repo"
+      - "excluir repo"
+    requires_no_abspath: false
+    inject: 'use the delete_directory tool with the HOST-SIDE absolute path. Example: to delete ~/repos/forge-agent-test, call delete_directory(path="/home/gabriel-miranda/repos/forge-agent-test")'
+
+  - id: git_status_unknown_repo
+    description: "Git status when no specific repository is mentioned"
+    patterns:
+      - "git status"
+      - "status do git"
+      - "status do reposit"
+    requires_no_abspath: true
+    inject: 'first use filesystem_list_directory with path="{filesystem_root}" to discover available repos, then call git_status'
