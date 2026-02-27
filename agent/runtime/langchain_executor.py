@@ -501,18 +501,18 @@ class LangChainExecutor:
             # num_gpu: Use GPU if available (set to -1 to use all available GPUs, or specific number)
             # Ollama will automatically detect and use GPU if available
             num_gpu = getattr(config.llm, 'num_gpu', -1)  # Default to -1 (use all GPUs) if not specified
-            
+            # num_ctx: context window size. Default Ollama context (4096) is too small when 60+ tool
+            # schemas are included in the request. 8192 is the recommended minimum.
+            num_ctx = getattr(config.llm, 'num_ctx', 8192)
+
             self.langchain_llm = ChatOllama(
                 model=config.llm.model,
                 base_url=config.llm.base_url or "http://localhost:11434",
                 temperature=config.llm.temperature,  # Should be 0.0 for best tool calling results
                 num_predict=config.llm.max_tokens,  # Ollama uses num_predict instead of max_tokens
                 num_gpu=num_gpu,  # Use GPU if available (-1 = use all GPUs, 0 = CPU only)
+                num_ctx=num_ctx,  # Context window; must fit system prompt + tool schemas + history
                 timeout=config.llm.timeout,
-                # Note: Ollama tool calling format is handled automatically by LangChain's bind_tools()
-                # The format expected by Ollama API is: {"type": "function", "function": {"name": "...", "arguments": {...}}}
-                # LangChain converts this automatically when using bind_tools()
-                # IMPORTANT: Use langchain_ollama (not langchain-community) for best tool calling support
             )
             self.logger.info(
                 f"✅ Created new ChatOllama instance: {config.llm.model} (fallback, not in ModelManager)"

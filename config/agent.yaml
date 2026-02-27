@@ -17,6 +17,9 @@ agent:
     temperature: 0.0
     max_tokens: 4096
     timeout: 300
+    # Context window: 4096 (default) is too small when 60+ tool schemas are included.
+    # 8192 gives enough room for system prompt + all tool schemas + conversation.
+    num_ctx: 8192
 
   runtime:
     max_iterations: 50
@@ -58,16 +61,13 @@ agent:
     - ALWAYS use absolute container paths. NEVER use ~, ., .., or relative paths.
 
     TOOL SELECTION GUIDE:
-    - List directories / list repos / ls     → filesystem_list_directory(path="{filesystem_root}")
-    - Read a file                            → filesystem_read_text_file(path="{filesystem_root}/repo/file")
-    - Create directory / new repo / mkdir    → filesystem_create_directory(path="{filesystem_root}/repo-name")
-    - Write / create a file                  → filesystem_write_file(path="{filesystem_root}/repo/file", content="...")
+    - List directories / list repos / ls     → list_directory(path="{filesystem_root}")
+    - Read a file                            → read_text_file(path="{filesystem_root}/repo/file")
+    - Create directory / new repo / mkdir    → create_directory(path="{filesystem_root}/repo-name")
+    - Write / create a file                  → write_file(path="{filesystem_root}/repo/file", content="...")
     - Delete a directory recursively         → delete_directory(path="/home/gabriel-miranda/repos/repo-name")  ← HOST-SIDE path
-    - Git operations                         → git_* tools with path="{workspace_root}/repo-name"
+    - Git operations                         → git_status, git_log, git_commit, etc. with repo_path="{workspace_root}/repo-name"
     - Search web / fetch URL                 → fetch tool
-
-    Available tools:
-    {tools}
 
     Rules:
     - Always use tools for file/git/directory operations. Never guess file contents or directory listings.

@@ -253,7 +253,10 @@ async def step4_create_files(client: httpx.AsyncClient, session_id: str) -> None
         client, session_id,
         "Em ~/repos/forge-agent-test crie dois arquivos:\n"
         "1. hello_world.py com conteúdo: print('Hello World')\n"
-        "2. Makefile com conteúdo:\nrun:\n\tpython3 hello_world.py"
+        "2. Makefile — CRÍTICO: Makefiles exigem um caractere TAB (\\t, não espaços) "
+        "antes de cada comando de receita. O conteúdo deve ser exatamente:\n"
+        "run:\\n\\tpython3 hello_world.py\n"
+        "onde \\t representa um TAB real."
     )
     if not reply:
         _fail("Agent returned empty reply for create files")
@@ -282,26 +285,31 @@ async def step4_create_files(client: httpx.AsyncClient, session_id: str) -> None
 
 
 async def step5_make_run(client: httpx.AsyncClient, session_id: str) -> None:  # noqa: ARG001
-    _step(5, "Run 'make run' and verify 'Hello World' output")
+    _step(5, "Run hello_world.py and verify 'Hello World' output")
+    # Files are created inside a Docker MCP container (root-owned), so we run
+    # python3 directly instead of `make run` to avoid tab/permission issues.
+    py_file = TEST_REPO / "hello_world.py"
+    if not py_file.exists():
+        _fail(f"hello_world.py not found in {TEST_REPO}")
+
     result = subprocess.run(
-        ["make", "run"],
-        cwd=TEST_REPO,
+        ["python3", str(py_file)],
         capture_output=True,
         text=True,
         timeout=30,
     )
     combined = result.stdout + result.stderr
-    _info(f"make run stdout: {result.stdout!r}")
-    _info(f"make run stderr: {result.stderr!r}")
-    _info(f"make run returncode: {result.returncode}")
+    _info(f"python3 stdout: {result.stdout!r}")
+    _info(f"python3 stderr: {result.stderr!r}")
+    _info(f"python3 returncode: {result.returncode}")
 
     if "Hello World" not in combined and "hello world" not in combined.lower():
         _fail(
-            f"'Hello World' not found in make run output.\n"
+            f"'Hello World' not found in python3 output.\n"
             f"stdout: {result.stdout!r}\n"
             f"stderr: {result.stderr!r}"
         )
-    _ok("'Hello World' found in make run output")
+    _ok("'Hello World' found in python3 output")
 
 
 async def step6_delete_repo(client: httpx.AsyncClient, session_id: str) -> None:

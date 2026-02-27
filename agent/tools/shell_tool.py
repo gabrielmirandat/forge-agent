@@ -86,7 +86,7 @@ def _delete_directory_sync(path: str) -> str:
 
 async def _delete_directory_async(path: str) -> str:
     import asyncio
-    return await asyncio.get_event_loop().run_in_executor(None, _delete_directory_sync, path)
+    return await asyncio.get_running_loop().run_in_executor(None, _delete_directory_sync, path)
 
 
 def create_delete_directory_tool(workspace_base: str = "~/repos") -> StructuredTool:

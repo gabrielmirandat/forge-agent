@@ -73,19 +73,12 @@ router:
         - git log
         - git diff
         - git branch
-        # Portuguese simple queries
-        - liste
-        - listar
-        - mostra
-        - mostrar
+        # Simple info queries (no tool use needed)
         - o que é
         - quem é
         - qual é
-        # English simple queries
         - what is
         - who is
-        - list files
-        - show files
 
     - tier: max
       keywords:

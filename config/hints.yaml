@@ -9,6 +9,9 @@
 #
 # NOTE: ~/repos and ~ in the message are NOT considered absolute paths for hint filtering.
 # Only messages that already have /projects/... or /workspace/... paths skip hints.
+#
+# IMPORTANT: Tool names are NOT prefixed by the MCP server name.
+# Correct names: list_directory, create_directory, write_file, git_status, etc.
 
 hints:
   - id: list_workspace
@@ -29,7 +32,7 @@ hints:
       - "list repos"
       - "list files"
     requires_no_abspath: true
-    inject: 'use filesystem_list_directory with path="{filesystem_root}" (this lists ~/repos which maps to {filesystem_root})'
+    inject: 'use list_directory with path="{filesystem_root}" (this lists ~/repos which maps to {filesystem_root})'
 
   - id: create_directory
     description: "Create a new directory or repository"
@@ -45,7 +48,7 @@ hints:
       - "create folder"
       - "inicializar repo"
     requires_no_abspath: false
-    inject: 'use filesystem_create_directory with path="{filesystem_root}/<repo-name>" to create the directory (~/repos maps to {filesystem_root})'
+    inject: 'use create_directory with path="{filesystem_root}/<repo-name>" to create the directory (~/repos maps to {filesystem_root})'
 
   - id: write_file
     description: "Create or write a file"
@@ -59,7 +62,7 @@ hints:
       - "makefile"
       - "hello world"
     requires_no_abspath: false
-    inject: 'use filesystem_write_file with path="{filesystem_root}/<repo>/<filename>" and content=<file-content> to create files'
+    inject: 'use write_file with path="{filesystem_root}/<repo>/<filename>" and content=<file-content> to create files'
 
   - id: delete_directory
     description: "Delete a repository or directory"
@@ -81,4 +84,4 @@ hints:
       - "status do git"
       - "status do reposit"
     requires_no_abspath: true
-    inject: 'first use filesystem_list_directory with path="{filesystem_root}" to discover available repos, then call git_status'
+    inject: 'first use list_directory with path="{filesystem_root}" to discover available repos, then call git_status'

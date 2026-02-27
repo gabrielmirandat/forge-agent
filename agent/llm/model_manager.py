@@ -140,11 +140,15 @@ class ModelManager:
                     from langchain_community.chat_models import ChatOllama
                 
                 # Create ChatOllama instance
+                # num_ctx: must be large enough to hold system prompt + tool schemas + history.
+                # Default Ollama context (4096) is too small when 60+ tool schemas are included.
+                num_ctx = llm_config.get("num_ctx", 8192)
                 langchain_model = ChatOllama(
                     model=model_name,
                     base_url=base_url,
                     temperature=provider_config["temperature"],
                     num_predict=provider_config["max_tokens"],
+                    num_ctx=num_ctx,
                     timeout=provider_config["timeout"],
                 )
                 
@@ -522,6 +526,7 @@ async def _register_discovered_model(
             model=model_name,
             base_url=ollama_url,
             temperature=0.0,
+            num_ctx=8192,
         )
         health_status, error = await manager._check_model_health(model_name, ollama_url)
         capabilities = {}
