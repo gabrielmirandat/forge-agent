@@ -23,6 +23,7 @@ venv/
 env/
 ENV/
 .venv
+.pytest_cache
 
 # IDEs
 .vscode/
@@ -69,3 +70,6 @@ phase*/tests/htmlcov/
 
 .docs/
 _helpers/
+
+.claude
+.continue
